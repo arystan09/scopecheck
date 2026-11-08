@@ -1,0 +1,24 @@
+services:
+  app:
+    build: .
+    image: scopecheck:local
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      SCOPECHECK_MODE: fake
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: scopecheck
+      POSTGRES_USER: scopecheck
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a generated local POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scopecheck -d scopecheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:

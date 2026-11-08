@@ -1,0 +1,21 @@
+name: Checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.7"
+      - run: uv sync --frozen --all-groups
+      - run: make check
+      - name: Validate Compose, build, and test the non-root container
+        run: |
+          export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+          make container-check
