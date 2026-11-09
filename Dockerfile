@@ -12,6 +12,8 @@ RUN groupadd --gid 10001 scopecheck \
     && useradd --uid 10001 --gid 10001 --no-create-home scopecheck
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
+COPY alembic.ini ./
+COPY migrations ./migrations
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

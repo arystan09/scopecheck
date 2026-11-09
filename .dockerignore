@@ -4,3 +4,6 @@
 !README.md
 !src/
 !src/**
+!alembic.ini
+!migrations/
+!migrations/**

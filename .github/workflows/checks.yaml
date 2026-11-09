@@ -5,6 +5,21 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: scopecheck
+          POSTGRES_DB: scopecheck
+          # Isolated disposable CI service only; Compose requires a password.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scopecheck -d scopecheck"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,6 +30,13 @@ jobs:
           version: "0.13.7"
       - run: uv sync --frozen --all-groups
       - run: make check
+      - name: Migrations and real PostgreSQL integration tests
+        env:
+          SCOPECHECK_DATABASE_URL: postgresql+psycopg://scopecheck@127.0.0.1:5432/scopecheck
+          SCOPECHECK_TEST_ADMIN_URL: postgresql+psycopg://scopecheck@127.0.0.1:5432/postgres
+        run: |
+          uv run alembic upgrade head
+          uv run pytest -m integration
       - name: Validate Compose, build, and test the non-root container
         run: |
           export POSTGRES_PASSWORD="$(openssl rand -hex 24)"

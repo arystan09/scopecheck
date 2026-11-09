@@ -12,6 +12,9 @@ dependencies = [
   "fastapi>=0.115,<1",
   "uvicorn>=0.34,<1",
   "pydantic-settings>=2.8,<3",
+  "sqlalchemy[asyncio]>=2.0,<2.1",
+  "psycopg[binary]>=3.2,<4",
+  "alembic>=1.15,<2",
 ]
 
 [project.scripts]

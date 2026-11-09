@@ -37,10 +37,14 @@ def _reject_constant(value: str) -> None:
     raise ValueError("non-finite JSON number")
 
 
-def load_dataset(path: Path) -> Dataset:
+def parse_dataset(raw: str) -> Dataset:
     data = json.loads(
-        path.read_text(encoding="utf-8"),
+        raw,
         object_pairs_hook=_unique_object,
         parse_constant=_reject_constant,
     )
     return Dataset.model_validate(data)
+
+
+def load_dataset(path: Path) -> Dataset:
+    return parse_dataset(path.read_text(encoding="utf-8"))

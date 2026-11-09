@@ -1,10 +1,10 @@
 # ScopeCheck
 
-Milestone 2 of the approved ten-stage baseline adds pure, offline synthetic
-sandbox evaluation to the Python/FastAPI foundation. The useful fake-provider
-MVP remains milestone 4. There is no live model, external API, database client,
-table, migration, worker, or UI. The full later-stage roadmap is not present;
-this implementation does not redefine it.
+Milestone 3 of the approved ten-stage baseline adds durable workspace ownership,
+immutable datasets/configuration, and queued runs/jobs to the offline evaluator.
+The useful fake-provider MVP remains milestone 4. There is **no worker, live
+model/provider, or UI**; jobs stay queued. The application uses one Python package
+and image, PostgreSQL 18, async SQLAlchemy 2/psycopg 3, and Alembic.
 
 ## Local quickstart
 
@@ -28,7 +28,8 @@ Stop with Ctrl-C. Liveness asserts the HTTP process is alive; it does not check
 database or provider readiness. `SCOPECHECK_MODE` defaults to `fake`; any other
 value prevents app creation. No provider keys or default secrets are configured.
 The app reads environment variables, not `.env` files automatically; `.env.example`
-documents the only setting. Unknown constructor fields are rejected. Ordinary
+documents configuration. Persistence requires `SCOPECHECK_DATABASE_URL`; liveness
+and offline replay do not. Unknown constructor fields are rejected. Ordinary
 process environment variables are ignored unless they match a declared setting.
 Validation error text hides input values; raw Pydantic `errors()` data can contain
 inputs and must not be logged or returned to clients.
@@ -47,8 +48,8 @@ uv run scopecheck --help
 `make check` also checks lock freshness. The lock freezes the resolved runtime
 and development dependency versions. Unit tests exercise invalid settings,
 credential non-exposure, HTTP behavior in-process, and the installed CLI.
-`unit`, `integration`, and `e2e` are strict registered pytest markers. There are
-no database or end-to-end pytest tests yet; no database claims are made.
+`unit`, `integration`, and `e2e` are strict registered pytest markers. Real PostgreSQL integration tests live in `tests/integration`; the command above
+selects only unit tests. See the persistence quickstart below.
 
 ## Container quickstart and verification
 
@@ -60,6 +61,7 @@ export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
 docker compose config
 docker build -t scopecheck:local .
 sh scripts/check-container.sh
+docker compose run --rm app alembic upgrade head
 docker compose up -d
 curl --fail http://127.0.0.1:8000/health/live
 docker compose down
@@ -69,8 +71,8 @@ unset POSTGRES_PASSWORD
 `docker compose config` prints the resolved local password: do not share its output.
 Keep the password in a local secret store if reusing the database volume; changing
 it does not change an already initialized database's password. Compose preserves
-the database volume on shutdown. The app does not use or depend on `db` yet.
-PostgreSQL is not published to the host. The app port binds only to loopback.
+the database volume on shutdown. The app connects to `db` and requires the migration below for API/readiness.
+PostgreSQL port 5432 and the app port bind only to loopback.
 
 The smoke script starts the built image on an ephemeral loopback port, asserts UID
 10001, requests liveness over real HTTP, and removes only its own container.
@@ -192,3 +194,140 @@ attempted but unavailable (`docker: command not found`). Container runtime
 identity/health remain unverified prerequisites carried from milestone 1. No
 remote CI run was performed. Offline acceptance is verified; full container/CI
 acceptance remains open. No database, live model, or paid service was used.
+
+## Durable ownership and queued runs (milestone 3)
+
+Prerequisites: Python 3.12, uv 0.13.7, and a running PostgreSQL **18** server.
+For the standard local setup, install/start Docker with Compose v2 first:
+
+```sh
+uv sync --frozen --all-groups
+export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+docker compose up -d db
+# Wait until `docker compose ps db` reports healthy.
+export SCOPECHECK_DATABASE_URL="postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD}@127.0.0.1:5432/scopecheck"
+uv run alembic upgrade head
+uv run scopecheck db bootstrap --workspace local
+uv run uvicorn scopecheck.app:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+Bootstrap prints a JSON object containing an editor token and its token ID **once**.
+Keep the token in a local secret store; do not redirect it into tracked files or
+logs. Repeating bootstrap for the same workspace issues nothing, including after
+revocation. Tokens have 256 bits of random entropy; only SHA-256 digests are stored.
+Local administrators can explicitly create reader/editor tokens or revoke by ID:
+
+```sh
+uv run scopecheck db token-create --workspace local --role reader
+uv run scopecheck db revoke --workspace local --token-id TOKEN_UUID_FROM_BOOTSTRAP
+```
+
+These are trusted local database administration commands, not unauthenticated HTTP
+endpoints. They require database access. Token role and workspace come only from
+the database lookup on each authenticated request; model/user payload fields cannot
+override them. Scenario actor context remains separate from operator identity.
+
+In another terminal, load the one-time token without putting it in shell history:
+
+```sh
+read -rs SCOPECHECK_TOKEN
+# Paste token and press Enter. The terminal does not echo it.
+curl --fail http://127.0.0.1:8000/health/ready
+DATASET_ID=$(curl --fail --silent \
+  -H "Authorization: Bearer $SCOPECHECK_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary @datasets/dev/basic.json http://127.0.0.1:8000/api/v1/datasets \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+CONFIG_ID=$(curl --fail --silent \
+  -H "Authorization: Bearer $SCOPECHECK_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"mode":"fake","fixture":"safe"}' \
+  http://127.0.0.1:8000/api/v1/configs \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+curl --fail -H "Authorization: Bearer $SCOPECHECK_TOKEN" \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: local-example-1' \
+  -d "{\"dataset_id\":\"$DATASET_ID\",\"config_id\":\"$CONFIG_ID\"}" \
+  http://127.0.0.1:8000/api/v1/runs
+curl --fail -H "Authorization: Bearer $SCOPECHECK_TOKEN" \
+  http://127.0.0.1:8000/api/v1/runs
+unset SCOPECHECK_TOKEN
+```
+
+Stop Uvicorn with Ctrl-C. `docker compose down` stops the local database and keeps
+its data volume. Keep the generated password for subsequent sessions; setting a
+new environment password does not reset an initialized PostgreSQL password.
+
+API behavior:
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /health/live` | Process liveness, no database required |
+| `GET /health/ready` | 200 only when the configured database has revision `0001`; otherwise safe 503 |
+| `POST /api/v1/datasets` | Editor-only raw dataset-v1 JSON; max 1 MiB and 100 cases; 201 new, 200 duplicate |
+| `GET /api/v1/datasets` | Workspace-owned version metadata with pagination |
+| `GET /api/v1/datasets/{id}` | Full owned immutable dataset, including private operator-side expectations |
+| `POST /api/v1/configs` | Editor-only `{mode: "fake", fixture: "safe"}` (both defaulted); immutable, content-deduplicated |
+| `POST /api/v1/runs` | Editor-only, requires owned `dataset_id`, `config_id`, and `Idempotency-Key`; 201 new, 200 retry |
+| `GET /api/v1/runs`, `GET /api/v1/runs/{id}` | Owned queued run(s) and immutable snapshot |
+
+Run input defaults: `mode="fake"`, `repetitions=1` (1–100), and
+`limits={"max_tool_calls":20}` (1–100). Limits and repetitions are recorded only;
+no worker executes them in milestone 3. Configuration supports only the three
+scripted fixtures. Unexpected payload fields and non-fake modes are rejected.
+
+Within one workspace, a unique idempotency key plus normalized request hash makes
+concurrent retries reuse the same run/job. A changed request with that key returns
+409. Missing/foreign references return 404; readers writing return 403; missing,
+invalid, or revoked bearer tokens return 401. Error bodies contain only `code`,
+`message`, and a generated `request_id` (also `X-Request-ID`); payloads, tokens,
+SQL diagnostics, and connection credentials are not echoed.
+
+Dataset and configuration hashes are workspace-scoped. The database enforces
+composite workspace/reference foreign keys, so direct cross-tenant inserts fail.
+Triggers reject update/delete of datasets, configurations, and runs in this stage.
+Run/job inserts commit atomically **before** the HTTP response. The immutable run
+snapshot records dataset/config hashes, dataset schema/policy/evaluator/tool schema
+versions, mode, repetitions, and limits. `SCOPECHECK_CODE_REVISION` supplies a build
+revision; the default is explicitly `unknown`, never a fabricated commit ID.
+
+List endpoints use ascending UUID keyset pagination: `limit` defaults to 20 and
+must be 1–100; use the returned `next_cursor` in the next request. Cursors must
+reference an owned item. Pagination is not a snapshot across concurrent inserts.
+Records use UUIDs and timezone-aware timestamps with UTC database connections.
+
+### Integration verification
+
+The test administrator must be able to create/drop databases. **Tests never reset
+the supplied database**: each creates a new `scopecheck_test_<random UUID>` database
+from template0, applies Alembic, and drops only that database in teardown. Missing
+configuration fails the selected integration suite; it does not silently skip it.
+
+```sh
+export SCOPECHECK_TEST_ADMIN_URL="postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD}@127.0.0.1:5432/postgres"
+uv run pytest -m integration
+```
+
+CI provisions PostgreSQL 18, runs `alembic upgrade head`, then this real database
+suite. Its isolated disposable service uses trust authentication; local Compose
+continues to require a generated password. No remote CI execution is claimed.
+
+There was no database schema before milestone 3, so `0001` upgrades an empty
+baseline. Tests also import the unchanged milestone-2 fixture, rerun upgrade head,
+and verify its canonical hash and replay results. This is not a claim of migration
+compatibility with a nonexistent prior relational schema.
+
+### Milestone 3 verification recorded on 2026-11-08
+
+Python 3.12.14 / uv 0.13.7: frozen install, lock freshness, lint, format, mypy,
+100 unit tests, all prior replay commands, and wheel/source builds passed.
+On a workspace-local real PostgreSQL **18.6** server, all **27 integration tests**
+passed using dedicated disposable databases. The exact Alembic upgrade and local
+bootstrap commands passed in another disposable database; token output was
+suppressed. Real HTTP `/health/live` and `/health/ready` both returned 200.
+No tests were skipped; the marker commands deselected the other test group.
+
+`docker compose up -d db`, `docker compose config`, and `docker build` were
+attempted but Docker is not installed. Thus Docker-specific build/runtime checks
+remain unverified; the real PostgreSQL results do not substitute for image checks.
+The configured GitHub Actions run remains pending. No worker or live provider was
+implemented, no credential output is included in the verification report, and no
+commit or push was performed.
