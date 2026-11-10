@@ -37,7 +37,20 @@ jobs:
         run: |
           uv run alembic upgrade head
           uv run pytest -m integration
+          uv run pytest -m e2e
       - name: Validate Compose, build, and test the non-root container
         run: |
           export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
           make container-check
+
+      - name: Compose API/worker demo and package parity
+        run: |
+          export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+          export SCOPECHECK_DB_PORT=55432
+          export SCOPECHECK_DATABASE_URL="postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD}@127.0.0.1:55432/scopecheck"
+          trap 'docker compose down --volumes' EXIT
+          docker compose up --build -d
+          curl --fail --silent --retry 30 --retry-delay 1 --retry-connrefused --max-time 2 --retry-max-time 45 http://127.0.0.1:8000/health/ready
+          uv run python scripts/demo_smoke.py
+          test "$(docker compose exec -T app scopecheck --version)" = "$(uv run scopecheck --version)"
+          test "$(docker compose exec -T worker scopecheck --version)" = "$(uv run scopecheck --version)"

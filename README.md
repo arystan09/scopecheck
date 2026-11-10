@@ -1,10 +1,77 @@
 # ScopeCheck
 
-Milestone 3 of the approved ten-stage baseline adds durable workspace ownership,
-immutable datasets/configuration, and queued runs/jobs to the offline evaluator.
-The useful fake-provider MVP remains milestone 4. There is **no worker, live
-model/provider, or UI**; jobs stay queued. The application uses one Python package
-and image, PostgreSQL 18, async SQLAlchemy 2/psycopg 3, and Alembic.
+Milestone **4 of 10** is the useful fake-provider MVP: a local synthetic order
+sandbox, immutable datasets/configs, authenticated APIs, a separate PostgreSQL
+worker, per-case evidence, reports, comparisons, and a small Jinja/vanilla-JS UI.
+No paid key or live model is involved. Operator bearer authentication is still
+required for all data reads/writes. Deep recovery belongs to milestone 6.
+
+## MVP quickstart (Compose)
+
+Requires Docker Engine/Desktop with Compose v2, Python 3.12, uv 0.13.7, and
+OpenSSL. Run from the repository root:
+
+```sh
+uv sync --frozen --all-groups
+export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+docker compose up --build -d
+# The migrate service upgrades the schema before API and worker start.
+docker compose exec app scopecheck db bootstrap --workspace local
+docker compose exec app scopecheck demo seed
+```
+
+Keep the one-time operator token from bootstrap in a local secret store; do not
+put it in logs or tracked files. Open [the local UI](http://127.0.0.1:8000/ui), paste
+the token, and connect. Refresh the run list; select a run to inspect progress,
+report counts, and expandable case traces. Use Compare with two completed run IDs.
+The three seeded fixtures are safe, unsafe, and deny-all. Seeding again reuses the
+same immutable dataset/configs and demo run IDs; it does not rerun completed jobs.
+To launch a new run, import a dataset in the UI, choose a fixture/repetitions, and
+click Launch fake run. The UI's dataset ID is filled after import.
+
+Verify the full flow with only temporary synthetic data and an in-memory token:
+
+```sh
+export SCOPECHECK_DATABASE_URL="postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD}@127.0.0.1:5432/scopecheck"
+uv run python scripts/demo_smoke.py
+```
+
+The script requires API/worker processes already running. It creates a fresh
+`demo-smoke-*` workspace and revokes its temporary token on exit, never printing
+it. Synthetic rows remain in a normal local database; run against a disposable DB
+when you want teardown to remove them. It refuses non-loopback HTTP targets and
+non-local credential-creation database URLs. An explicitly supplied
+`SCOPECHECK_DEMO_TOKEN` instead uses that local operator workspace without creating
+or revoking its token. The deadline defaults to 60 seconds (`--timeout 1..300`).
+
+`docker compose down` stops services and preserves the database. Reuse its original
+password on subsequent starts. `SCOPECHECK_DB_PORT` / `SCOPECHECK_HTTP_PORT` can change
+host ports from 5432 / 8000; pass a matching `--base-url` to the smoke script if needed.
+The API, worker, and one-shot migration service all use `scopecheck:local`.
+
+## Native MVP quickstart (verified without Docker)
+
+With an existing local **PostgreSQL 18** server and its database URL set:
+
+```sh
+uv sync --frozen --all-groups
+# Set SCOPECHECK_DATABASE_URL to your local postgresql+psycopg database URL.
+uv run alembic upgrade head
+uv run scopecheck db bootstrap --workspace local
+uv run scopecheck demo seed
+uv run uvicorn scopecheck.app:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+In another terminal with the same database environment:
+
+```sh
+uv run scopecheck worker
+```
+
+Then use the UI or run `uv run python scripts/demo_smoke.py` in a third terminal.
+`scopecheck worker --once` claims at most one queued job and exits; it does not drain
+all jobs. `scopecheck --version` and `GET /health/version` expose the package version.
+Reports include the versions recorded by workers that produced their attempts.
 
 ## Local quickstart
 
@@ -261,17 +328,17 @@ API behavior:
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /health/live` | Process liveness, no database required |
-| `GET /health/ready` | 200 only when the configured database has revision `0001`; otherwise safe 503 |
+| `GET /health/ready` | 200 only when the configured database has revision `0002`; otherwise safe 503 |
 | `POST /api/v1/datasets` | Editor-only raw dataset-v1 JSON; max 1 MiB and 100 cases; 201 new, 200 duplicate |
 | `GET /api/v1/datasets` | Workspace-owned version metadata with pagination |
 | `GET /api/v1/datasets/{id}` | Full owned immutable dataset, including private operator-side expectations |
 | `POST /api/v1/configs` | Editor-only `{mode: "fake", fixture: "safe"}` (both defaulted); immutable, content-deduplicated |
 | `POST /api/v1/runs` | Editor-only, requires owned `dataset_id`, `config_id`, and `Idempotency-Key`; 201 new, 200 retry |
-| `GET /api/v1/runs`, `GET /api/v1/runs/{id}` | Owned queued run(s) and immutable snapshot |
+| `GET /api/v1/runs`, `GET /api/v1/runs/{id}` | Owned run(s), lifecycle/progress, immutable snapshot |
 
 Run input defaults: `mode="fake"`, `repetitions=1` (1–100), and
-`limits={"max_tool_calls":20}` (1–100). Limits and repetitions are recorded only;
-no worker executes them in milestone 3. Configuration supports only the three
+`limits={"max_tool_calls":20}` (1–100). The milestone-4 worker executes repetitions sequentially and enforces this
+per-case tool-call limit. Configuration supports only the three
 scripted fixtures. Unexpected payload fields and non-fake modes are rejected.
 
 Within one workspace, a unique idempotency key plus normalized request hash makes
@@ -283,7 +350,8 @@ SQL diagnostics, and connection credentials are not echoed.
 
 Dataset and configuration hashes are workspace-scoped. The database enforces
 composite workspace/reference foreign keys, so direct cross-tenant inserts fail.
-Triggers reject update/delete of datasets, configurations, and runs in this stage.
+Triggers reject update/delete of datasets/configurations and run configuration.
+Milestone 4 permits only run lifecycle/progress fields to change.
 Run/job inserts commit atomically **before** the HTTP response. The immutable run
 snapshot records dataset/config hashes, dataset schema/policy/evaluator/tool schema
 versions, mode, repetitions, and limits. `SCOPECHECK_CODE_REVISION` supplies a build
@@ -331,3 +399,98 @@ remain unverified; the real PostgreSQL results do not substitute for image check
 The configured GitHub Actions run remains pending. No worker or live provider was
 implemented, no credential output is included in the verification report, and no
 commit or push was performed.
+
+## Worker, reports, comparisons, and limits (milestone 4)
+
+The worker claims one queued job with `FOR UPDATE SKIP LOCKED` in a short
+transaction. It records a random owner, increasing generation, and database-clock
+expiry. Every attempt/result/progress/final write checks and locks that same
+owner/generation/unexpired lease in its write transaction. Execution happens
+outside transactions with fresh sandbox state for every case and repetition.
+
+Leases last 60 seconds and renew at case boundaries. **There is no automatic
+expired-lease reclamation, crash replay, cancellation, or exactly-once execution
+guarantee in this milestone.** A process crash or case that outlives the lease can
+leave a run `running` with incomplete coverage. No stale worker may finalize its
+former lease. Hardened recovery is explicitly deferred to stage 6.
+
+Migration `0002` upgrades existing queued `0001` runs, preserves snapshots, and
+backfills total work. New `case_attempts` and immutable `case_results` have unique
+workspace/run/case/repetition keys and tenant-safe foreign keys. There is one
+attempt per case/repetition in this milestone. Progress counts persisted attempts,
+including limited/failed ones; completed evaluation coverage is reported separately.
+
+Additional authenticated read endpoints:
+
+- `GET /api/v1/runs/{id}/cases`: attempt status/timestamps, worker version, error
+  code, and structured score/events. Default limit 20, max 100; use `next_cursor`.
+- `GET /api/v1/runs/{id}/report`: callable while queued/running or terminal. Shows
+  expected, persisted, completed, missing, limited, and failed counts. `coverage`
+  is fully evaluated cases / expected cases. `legitimate_task_success` uses only
+  fully evaluated legitimate cases; `expected_legitimate_cases` exposes how many
+  were planned. Unsafe proposals/executed violations count observed events,
+  including partial traces. Zero applicable populations have null denominator/value.
+  `proposal_coverage` separately measures completed cases with at least one proposal.
+- `GET /api/v1/comparisons?baseline=UUID&candidate=UUID`: both runs must be terminal
+  (`completed` or `failed`) and share dataset hash/schema, evaluator/policy/tool
+  versions, repetitions, mode, and limits. Different configs/fixtures are allowed.
+  409 responses name incompatibilities in the safe error message. Fake/live modes
+  cannot mix. Compatible terminal partial runs can be compared but return
+  `complete:false` with an explicit coverage warning and both raw reports.
+
+A tool-call limit truncates execution, records a `limited` result, and makes the
+run terminal `failed`; an exception records only `execution_failed`, never raw
+exception contents. Missing/limited/failed evaluations do not silently become
+successful or complete. UUIDs/timestamps differ between runs; normalized case
+scores/events and raw outcome metrics are reproducible for identical fake input.
+
+The UI contains no third-party scripts/styles. Jinja escapes rendered values;
+dynamic data uses DOM `textContent`, never HTML interpolation. The operator token
+is held only in a JavaScript closure, cleared from its input after connecting,
+and forgotten on reload/exit/disconnect. No local/session storage or cookie login.
+CSP restricts resources to the same origin, and responses use `no-store`/`nosniff`.
+The old auto-generated CDN-backed Swagger/Redoc pages are disabled to maintain
+this boundary; `/openapi.json` remains available. Anonymous UI shell access grants
+no API read/write access.
+
+## Current verification
+
+```sh
+uv sync --frozen --all-groups
+make check
+# Set SCOPECHECK_TEST_ADMIN_URL to a local PostgreSQL 18 admin database URL.
+uv run pytest -m integration
+uv run pytest -m e2e
+docker compose up --build -d
+uv run python scripts/demo_smoke.py
+```
+
+The e2e test launches a real loopback API and separate CLI worker process on a
+fresh disposable PostgreSQL database. CI runs the unit/integration/e2e suites and
+also configures a Compose smoke/parity check. Local PostgreSQL verification does
+not prove container behavior; actual results are recorded below.
+
+### Milestone 4 verification recorded on 2026-11-09
+
+Frozen sync, lock freshness, Ruff lint/format, mypy, all 103 unit tests, all 51
+PostgreSQL integration tests, and one separate-process e2e test passed. The test
+server was real PostgreSQL 18.6. No tests were skipped; marker commands deselected
+other groups. Prior dataset validation/replay checks also passed unchanged.
+
+The exact `uv run python scripts/demo_smoke.py` command passed with local API and
+worker processes: five runs, normalized repeatability, raw safe/unsafe/deny-all
+counts, compatible comparison, and incompatible repetition rejection. CLI/API/
+worker versions matched `0.1.0`. Temporary smoke data/processes were removed.
+
+A normal wheel/source build hit restricted DNS. A clean `uv build --offline`
+using cached build dependencies passed. Inspection and an import/HTTP check from
+the unpacked wheel confirmed that the worker, Jinja template, local CSS, and JS
+are included and serve correctly. JavaScript syntax passed a bundled Node check;
+no Node runtime dependency was added. UI escaping is covered by Jinja, JSON, DOM
+sink/CSP checks; a full interactive browser automation suite was not run.
+
+`docker compose up --build -d`, `docker compose config`, and `docker build` were
+attempted but Docker is absent. Actual image/non-root runtime/API-worker image
+parity remain unverified. The CI workflow includes those checks, but its remote
+execution is pending. These limits do not invalidate the real local PostgreSQL
+and separate-process results, and those results do not prove container behavior.

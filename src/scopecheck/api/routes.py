@@ -12,7 +12,14 @@ from scopecheck.api.errors import ApiError
 from scopecheck.auth import Principal, authenticate
 from scopecheck.datasets.service import MAX_IMPORT_BYTES, import_dataset
 from scopecheck.db import SCHEMA_REVISION
-from scopecheck.runs.models import AssistantConfig, DatasetVersion, Run
+from scopecheck.runs.models import (
+    AssistantConfig,
+    CaseAttempt,
+    CaseResult,
+    DatasetVersion,
+    Run,
+)
+from scopecheck.runs.reports import compare, owned_run, report
 from scopecheck.runs.service import ConfigInput, RunInput, create_config, create_run
 
 router = APIRouter()
@@ -88,6 +95,11 @@ def run_view(record: Run) -> dict[str, Any]:
         "dataset_id": record.dataset_id,
         "config_id": record.config_id,
         "status": record.status,
+        "total_cases": record.total_cases,
+        "completed_cases": record.completed_cases,
+        "started_at": record.started_at,
+        "finished_at": record.finished_at,
+        "error_code": record.error_code,
         "snapshot": record.snapshot,
         "created_at": record.created_at,
     }
@@ -224,3 +236,69 @@ async def get_run(
     if record is None:
         raise ApiError(404, "not_found", "Resource not found")
     return run_view(record)
+
+
+@router.get("/api/v1/runs/{run_id}/report")
+async def get_report(
+    run_id: UUID, principal: PrincipalDep, session: Session
+) -> dict[str, Any]:
+    return await report(
+        session, await owned_run(session, principal.workspace_id, run_id)
+    )
+
+
+@router.get("/api/v1/runs/{run_id}/cases")
+async def get_cases(
+    run_id: UUID,
+    principal: PrincipalDep,
+    session: Session,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: UUID | None = None,
+) -> dict[str, Any]:
+    await owned_run(session, principal.workspace_id, run_id)
+    statement = select(CaseAttempt).where(
+        CaseAttempt.workspace_id == principal.workspace_id, CaseAttempt.run_id == run_id
+    )
+    if cursor is not None:
+        if await session.scalar(statement.where(CaseAttempt.id == cursor)) is None:
+            raise ApiError(404, "not_found", "Resource not found")
+        statement = statement.where(CaseAttempt.id > cursor)
+    attempts = list(
+        (
+            await session.scalars(statement.order_by(CaseAttempt.id).limit(limit + 1))
+        ).all()
+    )
+    items = []
+    for attempt in attempts[:limit]:
+        result = await session.scalar(
+            select(CaseResult).where(
+                CaseResult.workspace_id == principal.workspace_id,
+                CaseResult.run_id == run_id,
+                CaseResult.case_id == attempt.case_id,
+                CaseResult.repetition == attempt.repetition,
+            )
+        )
+        items.append(
+            {
+                "id": attempt.id,
+                "case_id": attempt.case_id,
+                "repetition": attempt.repetition,
+                "status": attempt.status,
+                "started_at": attempt.started_at,
+                "finished_at": attempt.finished_at,
+                "worker_version": attempt.worker_version,
+                "score": result.score if result is not None else None,
+                "error_code": result.error_code if result is not None else None,
+            }
+        )
+    return {
+        "items": items,
+        "next_cursor": str(attempts[limit - 1].id) if len(attempts) > limit else None,
+    }
+
+
+@router.get("/api/v1/comparisons")
+async def get_comparison(
+    baseline: UUID, candidate: UUID, principal: PrincipalDep, session: Session
+) -> dict[str, Any]:
+    return await compare(session, principal.workspace_id, baseline, candidate)

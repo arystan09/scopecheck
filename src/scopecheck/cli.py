@@ -8,9 +8,13 @@ from uuid import UUID
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
+from scopecheck.api.errors import ApiError
 from scopecheck.datasets.canonicalize import canonical_json, content_hash, load_dataset
 from scopecheck.db_cli import administer
+from scopecheck.demo import seed
 from scopecheck.evaluation.scorer import replay
+from scopecheck.runs.worker import serve
+from scopecheck.version import PACKAGE_VERSION
 
 
 def main() -> None:
@@ -18,6 +22,7 @@ def main() -> None:
         prog="scopecheck",
         description="ScopeCheck synthetic offline evaluation (no live model).",
     )
+    parser.add_argument("--version", action="version", version=PACKAGE_VERSION)
     commands = parser.add_subparsers(dest="command")
     dataset = commands.add_parser("dataset", help="Dataset operations")
     dataset_commands = dataset.add_subparsers(dest="dataset_command", required=True)
@@ -39,9 +44,34 @@ def main() -> None:
             command.add_argument("--role", choices=["reader", "editor"], required=True)
         if name == "revoke":
             command.add_argument("--token-id", type=UUID, required=True)
+    worker = commands.add_parser("worker", help="Run the fake-only worker process")
+    worker.add_argument(
+        "--once", action="store_true", help="Claim at most one job then exit"
+    )
+    demo = commands.add_parser("demo", help="Local synthetic demo data")
+    demo_commands = demo.add_subparsers(dest="demo_command", required=True)
+    demo_seed = demo_commands.add_parser("seed")
+    demo_seed.add_argument("--workspace", default="local")
+    demo_seed.add_argument(
+        "--dataset", type=Path, default=Path("datasets/dev/basic.json")
+    )
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
+        return
+    if args.command == "worker":
+        try:
+            asyncio.run(serve(once=args.once))
+        except KeyboardInterrupt:
+            return
+        except (ValueError, SQLAlchemyError):
+            parser.error("worker failed; check database settings and migrations")
+        return
+    if args.command == "demo":
+        try:
+            print(canonical_json(asyncio.run(seed(args.workspace, args.dataset))))
+        except (OSError, ValueError, SQLAlchemyError, ApiError):
+            parser.error("demo seeding failed; check local workspace and dataset")
         return
     if args.command == "db":
         try:

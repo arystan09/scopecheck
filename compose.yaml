@@ -3,17 +3,39 @@ services:
     build: .
     image: scopecheck:local
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${SCOPECHECK_HTTP_PORT:-8000}:8000"
     environment:
       SCOPECHECK_MODE: fake
       SCOPECHECK_DATABASE_URL: postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD:?Set a generated local POSTGRES_PASSWORD}@db:5432/scopecheck
     depends_on:
+      migrate:
+        condition: service_completed_successfully
+  migrate:
+    image: scopecheck:local
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    healthcheck:
+      disable: true
+    environment:
+      SCOPECHECK_DATABASE_URL: postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD:?Set a generated local POSTGRES_PASSWORD}@db:5432/scopecheck
+    depends_on:
       db:
         condition: service_healthy
+  worker:
+    image: scopecheck:local
+    build: .
+    command: ["scopecheck", "worker"]
+    healthcheck:
+      disable: true
+    environment:
+      SCOPECHECK_DATABASE_URL: postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD:?Set a generated local POSTGRES_PASSWORD}@db:5432/scopecheck
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
   db:
     image: postgres:18
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${SCOPECHECK_DB_PORT:-5432}:5432"
     environment:
       POSTGRES_DB: scopecheck
       POSTGRES_USER: scopecheck

@@ -7,3 +7,6 @@
 !alembic.ini
 !migrations/
 !migrations/**
+!datasets/
+!datasets/dev/
+!datasets/dev/basic.json

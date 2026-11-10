@@ -113,6 +113,7 @@ async def create_run(
             request_hash=request_hash,
             snapshot=snapshot,
             status="queued",
+            total_cases=len(dataset.content["cases"]) * body.repetitions,
         )
         .on_conflict_do_nothing(index_elements=["workspace_id", "idempotency_key"])
         .returning(Run)

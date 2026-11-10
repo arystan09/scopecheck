@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException
@@ -18,6 +19,9 @@ from scopecheck.api.errors import ApiError
 from scopecheck.api.routes import router
 from scopecheck.db import create_engine
 from scopecheck.settings import Settings
+from scopecheck.ui import ROOT
+from scopecheck.ui import router as ui_router
+from scopecheck.version import PACKAGE_VERSION
 
 
 class Liveness(BaseModel):
@@ -49,7 +53,13 @@ def create_app() -> FastAPI:
         if engine is not None:
             await engine.dispose()
 
-    app = FastAPI(title="ScopeCheck", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="ScopeCheck",
+        version=PACKAGE_VERSION,
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+    )
     app.state.engine = engine
     app.state.settings = settings
 
@@ -69,6 +79,14 @@ def create_app() -> FastAPI:
                 request, 500, "internal_error", "Internal server error"
             )
         response.headers["X-Request-ID"] = request.state.request_id
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "connect-src 'self'; object-src 'none'; base-uri 'none'; "
+            "frame-ancestors 'none'"
+        )
         return response
 
     @app.exception_handler(ApiError)
@@ -93,5 +111,11 @@ def create_app() -> FastAPI:
     async def live() -> Liveness:
         return Liveness()
 
+    @app.get("/health/version")
+    async def package_version() -> dict[str, str]:
+        return {"package_version": PACKAGE_VERSION, "mode": "fake"}
+
+    app.include_router(ui_router)
+    app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
     app.include_router(router)
     return app

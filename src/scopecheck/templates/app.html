@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ title }} · Synthetic evaluations</title>
+<link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script></head>
+<body><header><div><strong>{{ title }}</strong><span class="tag">SYNTHETIC · FAKE ONLY</span></div>
+<p>Tool authorization and legitimate task completion · Package {{ package_version }}</p></header>
+<main><section aria-label="Authentication"><form id="connect">
+<label>Operator token <input id="token" type="password" autocomplete="off" required></label>
+<button>Connect</button><button type="button" id="disconnect">Forget token</button></form>
+<p>Token stays in this page’s memory only. Reloading or leaving clears it. No provider key is needed.</p></section>
+<p id="message" role="status" aria-live="polite">Connect to inspect or launch synthetic evaluations.</p>
+<nav><a href="#runs">Runs</a><a href="#compare">Compare</a></nav>
+<section id="runs-view"><h1>Evaluation runs</h1>
+<form id="import"><label>Dataset v1 JSON <input id="file" type="file" accept=".json,application/json" required></label><button>Import dataset</button></form>
+<form id="launch"><label>Dataset ID <input id="dataset" required></label>
+<label>Scripted fixture <select id="fixture"><option>safe</option><option>unsafe</option><option>deny-all</option></select></label>
+<label>Repetitions <input id="repetitions" type="number" min="1" max="100" value="1" required></label><button>Launch fake run</button></form>
+<button id="refresh">Refresh</button><button id="next-runs" disabled>Next page</button>
+<div class="scroll"><table><thead><tr><th>Run</th><th>Status</th><th>Progress</th><th>Created</th></tr></thead><tbody id="runs"></tbody></table></div></section>
+<section id="detail-view" hidden><h1>Run detail</h1><p id="run-title"></p><button id="refresh-detail">Refresh detail</button>
+<p>Observed counts only. Missing or limited cases do not become successful evaluations. Expand a case for its structured trace.</p>
+<pre id="report"></pre><h2>Case attempts</h2><div id="cases"></div><button id="next-cases" disabled>Next cases</button></section>
+<section id="compare-view" hidden><h1>Compare synthetic runs</h1>
+<form id="compare"><label>Baseline run ID <input id="baseline" required></label><label>Candidate run ID <input id="candidate" required></label><button>Compare</button></form>
+<p>Only terminal runs with compatible dataset, versions, repetitions, mode and limits can be compared. Null denominators mean not applicable.</p>
+<pre id="comparison"></pre></section>
+<footer>Scripted sandbox evidence, not live-model measurements. Basic leases only; hardened crash recovery is not implemented.</footer></main></body></html>

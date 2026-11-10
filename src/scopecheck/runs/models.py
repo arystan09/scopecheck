@@ -9,6 +9,8 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
+    Integer,
     String,
     UniqueConstraint,
     func,
@@ -82,7 +84,9 @@ class Run(Record, Base):
             ["workspace_id", "config_id"],
             ["assistant_configs.workspace_id", "assistant_configs.id"],
         ),
-        CheckConstraint("status = 'queued'", name="run_queued_only"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed')", name="run_status"
+        ),
     )
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
     dataset_id: Mapped[UUID]
@@ -92,6 +96,12 @@ class Run(Record, Base):
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(20), default="queued")
 
+    total_cases: Mapped[int] = mapped_column(Integer, server_default="0")
+    completed_cases: Mapped[int] = mapped_column(Integer, server_default="0")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(String(50))
+
 
 class RunJob(Record, Base):
     __tablename__ = "run_jobs"
@@ -100,8 +110,66 @@ class RunJob(Record, Base):
             ["workspace_id", "run_id"], ["runs.workspace_id", "runs.id"]
         ),
         UniqueConstraint("workspace_id", "run_id"),
-        CheckConstraint("status = 'queued'", name="job_queued_only"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed')", name="job_status"
+        ),
+        Index("ix_run_jobs_claim", "status", "created_at"),
     )
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
     run_id: Mapped[UUID]
     status: Mapped[str] = mapped_column(String(20), default="queued")
+
+    lease_owner: Mapped[UUID | None]
+    lease_generation: Mapped[int] = mapped_column(Integer, server_default="0")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CaseAttempt(Record, Base):
+    __tablename__ = "case_attempts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id"], ["runs.workspace_id", "runs.id"]
+        ),
+        UniqueConstraint("workspace_id", "run_id", "case_id", "repetition"),
+        CheckConstraint("repetition >= 1", name="attempt_repetition"),
+        CheckConstraint(
+            "status IN ('running', 'completed', 'limited', 'failed')",
+            name="attempt_status",
+        ),
+    )
+    workspace_id: Mapped[UUID]
+    run_id: Mapped[UUID]
+    case_id: Mapped[str] = mapped_column(String)
+    repetition: Mapped[int]
+    lease_generation: Mapped[int]
+    worker_version: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CaseResult(Record, Base):
+    __tablename__ = "case_results"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id", "case_id", "repetition"],
+            [
+                "case_attempts.workspace_id",
+                "case_attempts.run_id",
+                "case_attempts.case_id",
+                "case_attempts.repetition",
+            ],
+        ),
+        UniqueConstraint("workspace_id", "run_id", "case_id", "repetition"),
+        CheckConstraint("repetition >= 1", name="result_repetition"),
+        CheckConstraint(
+            "status IN ('completed', 'limited', 'failed')", name="result_status"
+        ),
+    )
+    workspace_id: Mapped[UUID]
+    run_id: Mapped[UUID]
+    case_id: Mapped[str] = mapped_column(String)
+    repetition: Mapped[int]
+    status: Mapped[str] = mapped_column(String(20))
+    score: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(String(50))

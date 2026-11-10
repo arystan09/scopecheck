@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "scopecheck"
 version = "0.1.0"
-description = "Synthetic LLM tool authorization sandbox — application foundation"
+description = "Synthetic LLM tool authorization sandbox and offline evaluation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
   "sqlalchemy[asyncio]>=2.0,<2.1",
   "psycopg[binary]>=3.2,<4",
   "alembic>=1.15,<2",
+  "jinja2>=3.1.6,<4",
 ]
 
 [project.scripts]
