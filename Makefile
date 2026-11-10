@@ -10,6 +10,7 @@ check: offline-check
 	uv run mypy src
 	uv run pytest -m "not integration and not e2e"
 	uv run scopecheck --help
+	uv run scopecheck run live --help
 
 run:
 	uv run uvicorn scopecheck.app:create_app --factory --host 127.0.0.1 --port 8000

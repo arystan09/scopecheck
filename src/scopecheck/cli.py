@@ -13,6 +13,7 @@ from scopecheck.datasets.canonicalize import canonical_json, content_hash, load_
 from scopecheck.db_cli import administer
 from scopecheck.demo import seed
 from scopecheck.evaluation.scorer import replay
+from scopecheck.runs.live_cli import load_live_config, queue_live
 from scopecheck.runs.worker import serve
 from scopecheck.version import PACKAGE_VERSION
 
@@ -20,7 +21,9 @@ from scopecheck.version import PACKAGE_VERSION
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="scopecheck",
-        description="ScopeCheck synthetic offline evaluation (no live model).",
+        description=(
+            "ScopeCheck synthetic offline evaluation and owner-authorized live runs."
+        ),
     )
     parser.add_argument("--version", action="version", version=PACKAGE_VERSION)
     commands = parser.add_subparsers(dest="command")
@@ -44,7 +47,7 @@ def main() -> None:
             command.add_argument("--role", choices=["reader", "editor"], required=True)
         if name == "revoke":
             command.add_argument("--token-id", type=UUID, required=True)
-    worker = commands.add_parser("worker", help="Run the fake-only worker process")
+    worker = commands.add_parser("worker", help="Run the evaluation worker process")
     worker.add_argument(
         "--once", action="store_true", help="Claim at most one job then exit"
     )
@@ -55,9 +58,50 @@ def main() -> None:
     demo_seed.add_argument(
         "--dataset", type=Path, default=Path("datasets/dev/basic.json")
     )
+    runs = commands.add_parser("run", help="Local owner-authorized runs")
+    run_commands = runs.add_subparsers(dest="run_command", required=True)
+    live = run_commands.add_parser(
+        "live", help="Queue a budgeted live run; key only in worker environment"
+    )
+    live.add_argument("--workspace", required=True)
+    live.add_argument("--dataset-id", type=UUID, required=True)
+    live.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Explicit model/generation/versioned price JSON",
+    )
+    live.add_argument("--budget-microusd", type=int, required=True)
+    live.add_argument("--idempotency-key", required=True)
+    live.add_argument(
+        "--owner-authorized",
+        action="store_true",
+        required=True,
+        help="Authorize this budget as the local database owner",
+    )
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()
+        return
+    if args.command == "run":
+        try:
+            config = load_live_config(args.config)
+            result = asyncio.run(
+                queue_live(
+                    args.workspace,
+                    args.dataset_id,
+                    config,
+                    args.budget_microusd,
+                    args.owner_authorized,
+                    args.idempotency_key,
+                )
+            )
+            print(canonical_json(result))
+        except (OSError, ValueError, SQLAlchemyError, ApiError):
+            parser.error(
+                "live run refused; check local database ownership, "
+                "dataset, configuration and budget"
+            )
         return
     if args.command == "worker":
         try:

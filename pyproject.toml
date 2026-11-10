@@ -16,6 +16,8 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "alembic>=1.15,<2",
   "jinja2>=3.1.6,<4",
+  "openai==3.49.0",
+  "httpx2==2.16.0",
 ]
 
 [project.scripts]
@@ -53,3 +55,7 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
+
+[tool.hatch.build.targets.sdist]
+# Keep ignored local artifacts out even when a nested .env.example is unignored.
+exclude = ["/work/**", "/outputs/**"]

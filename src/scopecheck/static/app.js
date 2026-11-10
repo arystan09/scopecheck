@@ -27,7 +27,7 @@
       const cell = document.createElement("td"), link = document.createElement("a");
       link.href = "#run=" + encodeURIComponent(run.id); link.textContent = run.id;
       cell.append(link); row.append(cell);
-      for (const text of [run.status, `${run.completed_cases}/${run.total_cases}`, run.created_at]) {
+      for (const text of [run.snapshot.mode, run.status, `${run.completed_cases}/${run.total_cases}`, run.created_at]) {
         const td = document.createElement("td"); td.textContent = text; row.append(td);
       }
       el("runs").append(row);

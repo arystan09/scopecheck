@@ -1,9 +1,12 @@
 # ScopeCheck
 
-Milestone **4 of 10** is the useful fake-provider MVP: a local synthetic order
+Milestone **5 of 10** adds an optional bounded OpenAI adapter to the milestone-4
+fake-provider MVP: a local synthetic order
 sandbox, immutable datasets/configs, authenticated APIs, a separate PostgreSQL
 worker, per-case evidence, reports, comparisons, and a small Jinja/vanilla-JS UI.
-No paid key or live model is involved. Operator bearer authentication is still
+The fake workflow below needs no provider key. Live execution is available only
+through the local database-owner CLI with explicit pricing and spending authority.
+Operator bearer authentication is still
 required for all data reads/writes. Deep recovery belongs to milestone 6.
 
 ## MVP quickstart (Compose)
@@ -328,7 +331,7 @@ API behavior:
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /health/live` | Process liveness, no database required |
-| `GET /health/ready` | 200 only when the configured database has revision `0002`; otherwise safe 503 |
+| `GET /health/ready` | 200 only when the configured database has revision `0003`; otherwise safe 503 |
 | `POST /api/v1/datasets` | Editor-only raw dataset-v1 JSON; max 1 MiB and 100 cases; 201 new, 200 duplicate |
 | `GET /api/v1/datasets` | Workspace-owned version metadata with pagination |
 | `GET /api/v1/datasets/{id}` | Full owned immutable dataset, including private operator-side expectations |
@@ -494,3 +497,186 @@ attempted but Docker is absent. Actual image/non-root runtime/API-worker image
 parity remain unverified. The CI workflow includes those checks, but its remote
 execution is pending. These limits do not invalidate the real local PostgreSQL
 and separate-process results, and those results do not prove container behavior.
+
+## Milestone 5: optional owner-authorized live evaluation
+
+The public API and UI still create **fake-only** runs. A local database owner can
+queue a live OpenAI run using `scopecheck run live`. Reader/editor bearer tokens
+cannot grant this authority. The CLI requires both local PostgreSQL database-owner
+credentials (database owner or a member of that role) and `--owner-authorized`.
+This is local administration, not a new public owner role or a multi-user spending
+approval system. No worker key is read by the CLI or stored in configuration.
+
+The adapter uses OpenAI SDK **3.49.0**, its HTTPX2 transport **2.16.0**, and the
+Responses API. Implementation was checked against the official
+[function-calling guide](https://developers.openai.com/api/docs/guides/function-calling)
+and [Python SDK reference](https://developers.openai.com/api/reference/python),
+and the installed method signatures. All three tools use strict function schemas;
+local validation and the existing gate still decide whether a call executes.
+The independent oracle scores the resulting structured events/state. Refusal and
+final text alone do not establish task success.
+
+Only public case text, generic instructions, tool schemas, and authorized synthetic
+tool results enter model input. Actor context, initial state, scripted traces,
+private permissions, and expected outcomes are excluded. No arbitrary endpoints,
+remote tools, real payments, or external shipping are supported. The endpoint is
+fixed; proxy environment variables and redirects are disabled. Ambient
+`OPENAI_CUSTOM_HEADERS` are rejected. SDK retries and SDK/transport logging are
+disabled on the worker client. Provider error text, final prose, and refusal prose
+are not persisted. Reports retain classifications, numeric usage, configured and
+returned model IDs, typed tool evidence, and reservation references.
+
+### Pricing and bounds
+
+Each live case has at most **4 model requests, 6 tool calls, and 30 seconds**,
+including reservation and response processing. Cases execute sequentially with
+fresh state. Live CLI runs use one repetition. Limits, full supplied generation
+configuration, request parameters, SDK version, tool-schema hash, model, versioned
+price snapshot, budget, and local owner authorization are immutable run inputs.
+Unspecified temperature/top-p/reasoning values mean provider defaults; they are
+recorded as null in `snapshot.generation`, and omitted from request parameters.
+Live output is not claimed to be deterministic; mocked equivalent inputs and
+scripted fake inputs are checked for normalized reproducibility.
+
+Prices are **owner-reviewed inputs**, not downloaded or guessed defaults. Supply
+current uncached standard-tier USD rates for the exact text/function model,
+including the applicable context-length pricing tier, its documented context and
+output ceilings, a snapshot version, and a future expiry. If there are multiple
+applicable rates, supply their conservative maximum. Unsupported fee schedules or
+uncertain ceilings/rates must not be authorized. No built-in model/price catalogue
+is claimed. An incorrect owner-supplied price snapshot cannot guarantee a real
+invoice bound; it is part of the explicit local spending authorization.
+
+Money uses integer micro-USD (1 USD = 1,000,000 micro-USD). Rates are micro-USD per
+million tokens. Before each request, a short fenced PostgreSQL transaction reserves:
+
+```text
+ceil((full_context_input_ceiling * input_rate
+      + configured_max_output_tokens * output_rate) / 1,000,000)
+```
+
+`generation.max_input_tokens` must equal the snapshot's full context ceiling;
+it cannot be a guessed prompt estimate. `max_output_tokens` includes reasoning
+output. A separate serialized-input byte guard rejects oversized requests, but
+is not used to estimate billing. The reservation counts the full input ceiling
+without subtracting output or applying cache discounts. The budget may therefore
+be exhausted long before its nominal dollar value would be spent.
+
+Migration `0003` adds append-only, tenant-scoped `call_reservations` and case
+provenance. A locked run row serializes budget checks; a unique case/request
+sequence and current lease generation prevent duplicate/stale reservations.
+**All reservations remain held**, even after successful calls. A timeout, 429,
+5xx, malformed response, connection failure, or worker crash never replenishes the
+budget. Reported `reserved_microusd` is a conservative held amount, not an invoice
+or actual spending claim. Returned usage is informational. Deep crash recovery,
+lease reclaiming, billing reconciliation, and race hardening remain milestone 6.
+
+### Local live run (requires your own authorization)
+
+Prerequisites: the Python/uv/PostgreSQL setup above, migrated database, an existing
+local workspace/dataset, database-owner credentials, verified model/pricing
+information, and a key with access to that model. The following path can spend
+money only after you explicitly fill in the configuration, authorize the budget,
+and start a worker with your key. No live smoke was performed during development.
+
+```sh
+uv sync --frozen --all-groups
+# Set SCOPECHECK_DATABASE_URL to your local PostgreSQL 18 database-owner connection.
+uv run alembic upgrade head
+# If this workspace does not yet exist; prints a bearer credential once:
+uv run scopecheck db bootstrap --workspace local
+uv run scopecheck demo seed --workspace local
+# Copy dataset_id from the seed output; fake demo runs remain keyless.
+uv run scopecheck run live --help
+```
+
+Save a local `work/live-config.json` using this **non-executable template**. Replace
+all `REQUIRED_...` strings; numeric fields must become JSON integers. The template
+intentionally contains no guessed model, price, budget, or default credential.
+
+```json
+{
+  "mode": "live",
+  "provider": "openai",
+  "model": "REQUIRED_MODEL_ID",
+  "generation": {
+    "max_input_tokens": "REQUIRED_FULL_CONTEXT_CEILING_INTEGER",
+    "max_output_tokens": "REQUIRED_OUTPUT_BOUND_INTEGER",
+    "temperature": null,
+    "top_p": null,
+    "reasoning_effort": null
+  },
+  "price": {
+    "version": "REQUIRED_PRICE_VERSION",
+    "model": "REQUIRED_MODEL_ID",
+    "currency": "USD",
+    "input_microusd_per_million": "REQUIRED_INPUT_RATE_INTEGER",
+    "output_microusd_per_million": "REQUIRED_OUTPUT_RATE_INTEGER",
+    "context_window_tokens": "REQUIRED_FULL_CONTEXT_CEILING_INTEGER",
+    "max_output_tokens": "REQUIRED_MODEL_OUTPUT_CEILING_INTEGER",
+    "valid_until": "REQUIRED_FUTURE_ISO8601_WITH_TIMEZONE",
+    "owner_verified": true
+  }
+}
+```
+
+Stop other workers before queuing a live run; a worker without a key will mark it
+failed with `missing_credentials`. If using the Compose quickstart, first run
+`docker compose stop worker`. Set these explicit values in your local shell:
+
+```sh
+export DATASET_ID='REPLACE_WITH_SEEDED_DATASET_UUID'
+export LIVE_BUDGET_MICROUSD='REPLACE_WITH_AUTHORIZED_INTEGER_BUDGET'
+uv run scopecheck run live --workspace local --dataset-id "$DATASET_ID" \
+  --config work/live-config.json --budget-microusd "$LIVE_BUDGET_MICROUSD" \
+  --idempotency-key "local-live-reviewed-1" --owner-authorized
+```
+
+Identical input/key returns the same run; a changed budget/config with the same key
+returns a nonzero CLI error (the underlying conflict is 409). Run the worker in a
+separate terminal, with the same local database URL. Enter the key without putting
+it in command arguments, shell history, `.env`, the API environment, or the image:
+
+```sh
+export SCOPECHECK_OPENAI_API_KEY="$(uv run python -c 'import getpass; print(getpass.getpass("Worker OpenAI key: "))')"
+uv run scopecheck worker
+# After stopping the worker with Ctrl-C:
+unset SCOPECHECK_OPENAI_API_KEY
+```
+
+Inspect the returned run ID through the authenticated UI or existing
+`GET /api/v1/runs/{id}/cases` and `/report` endpoints. The list shows mode; live
+reports identify the model, classifications, usage, held budget, and incomplete
+coverage. Fake/live comparisons return 409. All sandbox data remain synthetic,
+even when the proposals come from a live model.
+
+### Milestone-5 verification
+
+```sh
+uv sync --frozen --all-groups
+make check
+uv run pytest tests/unit/providers
+# Set SCOPECHECK_TEST_ADMIN_URL to a disposable PostgreSQL 18 admin connection.
+uv run pytest -m integration
+uv run pytest -m e2e
+uv run scopecheck run live --help
+docker compose config
+docker build -t scopecheck:local .
+docker compose up --build -d
+uv run python scripts/demo_smoke.py
+```
+
+All provider tests use mock transports and invented test-only prices/models. CI's
+existing unit, real-PostgreSQL integration, process e2e, and container/demo steps
+include this stage without any provider key. Remote CI execution is pending until
+an actual remote run. Local verification evidence and limitations are recorded in
+the implementation report; native process tests do not prove container behavior.
+
+Local stage-5 results: frozen install, dataset validation and all three scripted
+replays, Ruff lint/format, strict mypy (37 source files), both CLI help commands,
+170 unit tests (including 67 provider tests), 65 PostgreSQL 18 integration tests,
+and one native API/worker e2e demo smoke passed. Source/wheel packaging was also
+built and inspected. Initial test-code errors and a child-logger leak regression
+were corrected before the final passing run. Docker Compose/build/start checks
+were attempted but unavailable because Docker is not installed; image execution
+and container parity remain unverified. No paid model smoke or remote CI ran.

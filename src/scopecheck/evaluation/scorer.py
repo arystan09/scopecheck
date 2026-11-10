@@ -5,7 +5,7 @@ from pydantic import ValidationError
 from scopecheck.datasets.canonicalize import content_hash
 from scopecheck.datasets.schemas import Case, Dataset, Fixture
 from scopecheck.evaluation.events import Event, ToolCall
-from scopecheck.providers.base import Provider, PublicInput
+from scopecheck.providers.base import PublicInput, ScriptedProvider
 from scopecheck.providers.fake import FakeProvider
 from scopecheck.sandbox.state import Order, State, StrictModel
 from scopecheck.sandbox.tools import (
@@ -144,7 +144,7 @@ def score_case(case: Case, events: list[Event], final: State) -> CaseScore:
     )
 
 
-def run_case(case: Case, provider: Provider) -> CaseScore:
+def run_case(case: Case, provider: ScriptedProvider) -> CaseScore:
     sandbox = Sandbox(case.initial_state, case.actor)
     # Only public text crosses the provider boundary. Scripts are fixture inputs.
     calls = provider.propose(PublicInput(text=case.public_input))

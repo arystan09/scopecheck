@@ -1,4 +1,4 @@
-"""Keyless configuration for the current milestone."""
+"""Public app settings; the worker reads its provider key separately."""
 
 from typing import Literal
 
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
         frozen=True,
     )
 
-    # Reject provider mode until its explicitly approved milestone exists.
+    # Public API creation stays fake-only; live runs require local owner authority.
     mode: Literal["fake"] = "fake"
 
     database_url: SecretStr | None = Field(default=None, repr=False, exclude=True)

@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -172,4 +173,33 @@ class CaseResult(Record, Base):
     repetition: Mapped[int]
     status: Mapped[str] = mapped_column(String(20))
     score: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    provenance: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     error_code: Mapped[str | None] = mapped_column(String(50))
+
+
+class CallReservation(Record, Base):
+    __tablename__ = "call_reservations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id", "case_id", "repetition"],
+            [
+                "case_attempts.workspace_id",
+                "case_attempts.run_id",
+                "case_attempts.case_id",
+                "case_attempts.repetition",
+            ],
+        ),
+        UniqueConstraint("workspace_id", "run_id", "case_id", "repetition", "sequence"),
+        CheckConstraint("sequence BETWEEN 1 AND 4", name="reservation_sequence"),
+        CheckConstraint("amount_microusd > 0", name="reservation_positive"),
+    )
+    workspace_id: Mapped[UUID]
+    run_id: Mapped[UUID]
+    case_id: Mapped[str] = mapped_column(String)
+    repetition: Mapped[int]
+    sequence: Mapped[int]
+    lease_generation: Mapped[int]
+    amount_microusd: Mapped[int] = mapped_column(BigInteger)
+    price_hash: Mapped[str] = mapped_column(String(64))
+    # Reservations are append-only and never released in stage 5, including
+    # successful calls. A crash/timeout cannot silently replenish the budget.

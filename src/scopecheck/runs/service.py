@@ -1,7 +1,7 @@
 """Immutable configuration and transactional, idempotent queued run creation."""
 
 import hashlib
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -45,7 +45,12 @@ async def create_config(
     workspace_id: UUID,
     body: ConfigInput,
 ) -> tuple[AssistantConfig, bool]:
-    content = body.model_dump(mode="json")
+    return await store_config(session, workspace_id, body.model_dump(mode="json"))
+
+
+async def store_config(
+    session: AsyncSession, workspace_id: UUID, content: dict[str, Any]
+) -> tuple[AssistantConfig, bool]:
     content_hash = digest(content)
     record = await session.scalar(
         insert(AssistantConfig)
@@ -90,6 +95,10 @@ async def create_run(
     )
     if dataset is None or config is None:
         raise ApiError(404, "not_found", "Resource not found")
+    if config.content.get("mode") != "fake":
+        raise ApiError(
+            422, "fake_only", "Public run creation requires a fake configuration"
+        )
     request_hash = digest(body.model_dump(mode="json"))
     snapshot = {
         "dataset_hash": dataset.content_hash,
@@ -103,6 +112,20 @@ async def create_run(
         "repetitions": body.repetitions,
         "limits": body.limits.model_dump(),
     }
+    return await queue_run(
+        session, workspace_id, dataset, config, key, request_hash, snapshot
+    )
+
+
+async def queue_run(
+    session: AsyncSession,
+    workspace_id: UUID,
+    dataset: DatasetVersion,
+    config: AssistantConfig,
+    key: str,
+    request_hash: str,
+    snapshot: dict[str, Any],
+) -> tuple[Run, bool]:
     record = await session.scalar(
         insert(Run)
         .values(
@@ -113,7 +136,7 @@ async def create_run(
             request_hash=request_hash,
             snapshot=snapshot,
             status="queued",
-            total_cases=len(dataset.content["cases"]) * body.repetitions,
+            total_cases=len(dataset.content["cases"]) * snapshot["repetitions"],
         )
         .on_conflict_do_nothing(index_elements=["workspace_id", "idempotency_key"])
         .returning(Run)

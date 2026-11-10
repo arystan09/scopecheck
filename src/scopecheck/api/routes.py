@@ -288,6 +288,7 @@ async def get_cases(
                 "finished_at": attempt.finished_at,
                 "worker_version": attempt.worker_version,
                 "score": result.score if result is not None else None,
+                "provenance": result.provenance if result is not None else None,
                 "error_code": result.error_code if result is not None else None,
             }
         )

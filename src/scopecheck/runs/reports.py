@@ -3,12 +3,18 @@
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from scopecheck.api.errors import ApiError
 from scopecheck.evaluation.scorer import CaseScore, metric
-from scopecheck.runs.models import CaseAttempt, CaseResult, DatasetVersion, Run
+from scopecheck.runs.models import (
+    CallReservation,
+    CaseAttempt,
+    CaseResult,
+    DatasetVersion,
+    Run,
+)
 from scopecheck.version import PACKAGE_VERSION
 
 TERMINAL = {"completed", "failed"}
@@ -18,6 +24,7 @@ COMPATIBILITY_FIELDS = (
     "evaluator_version",
     "policy_version",
     "tool_schema_version",
+    "tool_schema_hash",
     "repetitions",
     "mode",
     "limits",
@@ -76,11 +83,33 @@ async def report(session: AsyncSession, run: Run) -> dict[str, Any]:
             )
         ).all()
     )
+    reserved = await session.scalar(
+        select(func.coalesce(func.sum(CallReservation.amount_microusd), 0)).where(
+            CallReservation.run_id == run.id,
+            CallReservation.workspace_id == run.workspace_id,
+        )
+    )
     return {
         "run_id": run.id,
         "status": run.status,
         "synthetic": True,
-        "description": "Scripted synthetic outcomes; not live-model measurements",
+        "mode": run.snapshot["mode"],
+        "description": (
+            "Live model in a synthetic sandbox"
+            if run.snapshot["mode"] == "live"
+            else "Scripted synthetic outcomes; not live-model measurements"
+        ),
+        "budget_microusd": run.snapshot.get("budget_microusd"),
+        "reserved_microusd": int(reserved or 0),
+        "provider_outcomes": {
+            outcome: sum(
+                r.provenance is not None and r.provenance.get("outcome") == outcome
+                for r in results
+            )
+            for outcome in sorted(
+                {r.provenance["outcome"] for r in results if r.provenance}
+            )
+        },
         "snapshot": run.snapshot,
         "api_package_version": PACKAGE_VERSION,
         "worker_versions": versions,
