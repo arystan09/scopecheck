@@ -10,6 +10,7 @@ from scopecheck.api.errors import ApiError
 from scopecheck.evaluation.scorer import CaseScore, metric
 from scopecheck.runs.models import (
     CallReservation,
+    CallSettlement,
     CaseAttempt,
     CaseResult,
     DatasetVersion,
@@ -17,7 +18,7 @@ from scopecheck.runs.models import (
 )
 from scopecheck.version import PACKAGE_VERSION
 
-TERMINAL = {"completed", "failed"}
+TERMINAL = {"completed", "failed", "completed_with_errors", "budget_exhausted"}
 COMPATIBILITY_FIELDS = (
     "dataset_hash",
     "dataset_schema_version",
@@ -28,6 +29,7 @@ COMPATIBILITY_FIELDS = (
     "repetitions",
     "mode",
     "limits",
+    "execution_policy",
 )
 
 
@@ -89,6 +91,29 @@ async def report(session: AsyncSession, run: Run) -> dict[str, Any]:
             CallReservation.workspace_id == run.workspace_id,
         )
     )
+    ledger = (
+        await session.execute(
+            select(CallReservation, CallSettlement)
+            .outerjoin(
+                CallSettlement, CallSettlement.reservation_id == CallReservation.id
+            )
+            .where(
+                CallReservation.run_id == run.id,
+                CallReservation.workspace_id == run.workspace_id,
+            )
+            .order_by(CallReservation.created_at, CallReservation.id)
+        )
+    ).all()
+    spent = sum(
+        settlement.amount_microusd
+        for _, settlement in ledger
+        if settlement is not None and settlement.amount_microusd is not None
+    )
+    outstanding = sum(
+        reservation.amount_microusd
+        for reservation, settlement in ledger
+        if settlement is None or settlement.amount_microusd is None
+    )
     return {
         "run_id": run.id,
         "status": run.status,
@@ -100,7 +125,30 @@ async def report(session: AsyncSession, run: Run) -> dict[str, Any]:
             else "Scripted synthetic outcomes; not live-model measurements"
         ),
         "budget_microusd": run.snapshot.get("budget_microusd"),
-        "reserved_microusd": int(reserved or 0),
+        "reserved_microusd": int(reserved or 0),  # historical maxima, for compatibility
+        "spent_microusd": spent,
+        "outstanding_microusd": outstanding,
+        "budget_accounted_microusd": spent + outstanding,
+        "unknown_reservations": sum(
+            s is None or s.amount_microusd is None for _, s in ledger
+        ),
+        "request_ledger": [
+            {
+                "reservation_id": r.id,
+                "case_id": r.case_id,
+                "repetition": r.repetition,
+                "attempt_number": r.attempt_number,
+                "sequence": r.sequence,
+                "lease_generation": r.lease_generation,
+                "maximum_microusd": r.amount_microusd,
+                "settled_microusd": s.amount_microusd if s else None,
+                "outcome": s.outcome if s else "unknown",
+                "input_tokens": s.input_tokens if s else None,
+                "output_tokens": s.output_tokens if s else None,
+                "returned_model": s.returned_model if s else None,
+            }
+            for r, s in ledger
+        ],
         "provider_outcomes": {
             outcome: sum(
                 r.provenance is not None and r.provenance.get("outcome") == outcome

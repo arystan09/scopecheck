@@ -189,7 +189,7 @@ async def test_final_and_refusal_do_not_imply_success(live_config, kind, outcome
         (400, "provider_error"),
     ],
 )
-async def test_errors_are_classified_without_retry_or_secret_leak(
+async def test_errors_are_classified_with_only_explicit_retries(
     live_config, code, outcome
 ):
     ledger, seen = Ledger(), []
@@ -204,8 +204,9 @@ async def test_errors_are_classified_without_retry_or_secret_leak(
         result = await run_live_case(
             case(), OpenAIProvider(client, live_config), ledger.reserve, ledger.record
         )
-    assert result.outcome == outcome and len(seen) == 1
-    assert len(ledger.reservations) == 1
+    expected_requests = 3 if code in {429, 500, 503} else 1
+    assert result.outcome == outcome and len(seen) == expected_requests
+    assert len(ledger.reservations) == expected_requests
     assert KEY not in repr(result) + repr(ledger.turns)
 
 

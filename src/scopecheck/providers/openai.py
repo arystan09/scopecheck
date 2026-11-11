@@ -3,6 +3,9 @@
 import json
 import logging
 import os
+import ssl
+import time
+from collections.abc import Callable
 from typing import Any, TypedDict, cast
 
 import httpx2
@@ -20,6 +23,7 @@ from scopecheck.datasets.canonicalize import canonical_json
 from scopecheck.evaluation.events import ToolCall
 from scopecheck.providers.base import ProviderCall, PublicInput, Turn
 from scopecheck.providers.config import LiveConfig
+from scopecheck.runs.retry import retry_after_seconds
 from scopecheck.runs.service import digest
 from scopecheck.sandbox.tools import GetOrder, IssueRefund, UpdateAddress
 
@@ -114,8 +118,15 @@ class Usage(TypedDict):
 
 
 class OpenAIProvider:
-    def __init__(self, client: AsyncOpenAI, config: LiveConfig) -> None:
+    def __init__(
+        self,
+        client: AsyncOpenAI,
+        config: LiveConfig,
+        *,
+        wall_time: Callable[[], float] = time.time,
+    ) -> None:
         self.client, self.config = client, config
+        self.wall_time = wall_time
 
     async def respond(
         self, request: PublicInput, history: list[dict[str, Any]], timeout: float
@@ -140,12 +151,38 @@ class OpenAIProvider:
             return Turn("timeout")
         except AuthenticationError:
             return Turn("invalid_credentials")
-        except RateLimitError:
-            return Turn("rate_limit")
+        except RateLimitError as exc:
+            return Turn(
+                "rate_limit",
+                status_code=429,
+                retryable=exc.code != "insufficient_quota",
+                retry_after=retry_after_seconds(
+                    exc.response.headers.get("retry-after"), self.wall_time()
+                ),
+            )
         except APIStatusError as exc:
-            return Turn("server_error" if exc.status_code >= 500 else "provider_error")
-        except APIConnectionError:
-            return Turn("connection_error")
+            return Turn(
+                "server_error" if exc.status_code >= 500 else "provider_error",
+                status_code=exc.status_code,
+                retry_after=retry_after_seconds(
+                    exc.response.headers.get("retry-after"), self.wall_time()
+                ),
+            )
+        except APIConnectionError as exc:
+            cause: BaseException | None = exc
+            retryable = True
+            for _ in range(8):
+                if isinstance(
+                    cause,
+                    (
+                        ssl.SSLCertVerificationError,
+                        httpx2.UnsupportedProtocol,
+                        httpx2.LocalProtocolError,
+                    ),
+                ):
+                    retryable = False
+                cause = cause.__cause__ if cause is not None else None
+            return Turn("connection_error", retryable=retryable)
         except (ValueError, TypeError):
             return Turn("malformed_output")
         try:

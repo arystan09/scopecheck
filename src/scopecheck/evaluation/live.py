@@ -12,6 +12,7 @@ from scopecheck.evaluation.events import Event
 from scopecheck.evaluation.scorer import CaseScore, score_case
 from scopecheck.providers.base import Provider, PublicInput, Turn
 from scopecheck.runs.budget import BudgetExceeded
+from scopecheck.runs.retry import RetryPolicy
 from scopecheck.sandbox.tools import Sandbox
 
 
@@ -28,6 +29,9 @@ async def run_live_case(
     provider: Provider,
     reserve: Callable[[int], Awaitable[UUID]],
     record: Callable[[UUID, Turn], Awaitable[None]],
+    *,
+    retry: RetryPolicy | None = None,
+    remaining_seconds: float = 30,
 ) -> LiveResult:
     sandbox = Sandbox(case.initial_state, case.actor)
     events: list[Event] = []
@@ -35,21 +39,39 @@ async def run_live_case(
     requests = 0
     outcome = "request_limit"
     ids: set[str] = set()
-    deadline = asyncio.get_running_loop().time() + 30
+    retry = retry or RetryPolicy()
+    duration = max(0, min(30, remaining_seconds))
+    deadline = retry.now() + duration
+    retries = 0
     try:
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout_at(asyncio.get_running_loop().time() + duration):
             for sequence in range(1, 5):
+                if retry.now() >= deadline:
+                    outcome = "timeout"
+                    break
                 reservation = await reserve(sequence)
+                if retry.now() >= deadline:
+                    outcome = "timeout"
+                    break
                 requests += 1
                 turn = await provider.respond(
                     PublicInput(text=case.public_input),
                     history,
-                    max(0.001, deadline - asyncio.get_running_loop().time()),
+                    max(0.001, deadline - retry.now()),
                 )
                 await record(reservation, turn)
+                if retry.now() >= deadline:
+                    outcome = "timeout"
+                    break
                 if turn.outcome != "tools":
+                    delay = retry.delay(turn, retries, deadline - retry.now())
+                    if delay is not None and sequence < 4:
+                        await retry.sleep(delay)
+                        retries += 1
+                        continue
                     outcome = turn.outcome
                     break
+                retries = 0
                 history.extend(turn.continuation)
                 for proposal in turn.calls:
                     if len(events) >= 6:

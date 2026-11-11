@@ -3,11 +3,11 @@
 The approved baseline has exactly **10 mandatory milestones**. The useful
 fake-provider MVP is milestone **4**, not milestone 1. Milestone 1 provides the
 application foundation; milestone 2 supplies the offline sandbox and scorer.
-The current authorization is milestone 5: one bounded OpenAI adapter, explicit
-owner-authorized local live runs, and conservative durable call reservations.
-Public run creation remains fake-only. Do not implement milestone 6 or later;
-deep crash recovery belongs to stage 6. No paid verification without explicit
-spending authorization. The full later-stage roadmap was not supplied.
+The current authorization is milestone 6: bounded worker concurrency, database-time
+heartbeat/lease takeover and fencing, explicit transient retries, and conservative
+request-budget settlement. Public run creation remains fake-only. Do not implement
+milestone 7 or later. No paid verification without explicit spending authorization.
+The full later-stage roadmap was not supplied.
 Do not invent, merge, reorder, or silently implement milestones.
 
 Keep one modular Python package and application image. The approved architecture

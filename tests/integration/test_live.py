@@ -184,7 +184,13 @@ async def test_unknown_or_error_outcomes_keep_reservations(
     assert (
         len(calls) == 1 and report["reserved_microusd"] == live_config.maximum_charge()
     )
-    assert report["provider_outcomes"] == {expected: 1} and not report["complete"]
+    terminal_outcome = expected if status == 401 else "budget_exhausted"
+    assert (
+        report["provider_outcomes"] == {terminal_outcome: 1} and not report["complete"]
+    )
+    assert report["request_ledger"][0]["outcome"] == expected
+    assert report["unknown_reservations"] == 1
+    assert report["outstanding_microusd"] == live_config.maximum_charge()
     assert KEY not in json.dumps(report)
     async with AsyncSession(database.engine) as session:
         reservation = await session.scalar(select(CallReservation))
@@ -288,11 +294,11 @@ async def test_non_owner_database_role_cannot_queue(
 
 
 async def test_migration_preserves_prior_fake_fixture(api, database, live_config):
-    # Downgrade an untouched schema to the actual prior revision, then seed it.
-    await migration(database.url, "downgrade", "0002")
+    # Preserve a queued fixture through the actual prior revision and upgrade.
     from test_worker import launch
 
     fake = await launch(api)
+    await migration(database.url, "downgrade", "0002")
     await migration(database.url, "upgrade", "head")
     await migration(database.url, "check")
     await worker.run_one(database.engine)

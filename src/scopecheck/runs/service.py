@@ -126,6 +126,18 @@ async def queue_run(
     request_hash: str,
     snapshot: dict[str, Any],
 ) -> tuple[Run, bool]:
+    snapshot = {
+        **snapshot,
+        "execution_policy": {
+            "version": "2",
+            "lease_seconds": 30,
+            "heartbeat_seconds": 5,
+            "run_deadline_seconds": 300,
+            "case_concurrency": 2,
+            "attempts_per_case": 2,
+            "transient_retries": 2,
+        },
+    }
     record = await session.scalar(
         insert(Run)
         .values(

@@ -137,7 +137,12 @@ def main() -> None:
         for name, run_id in ids.items():
             while True:
                 result = request(f"/api/v1/runs/{run_id}/report")
-                if result["status"] in {"completed", "failed"}:
+                if result["status"] in {
+                    "completed",
+                    "failed",
+                    "completed_with_errors",
+                    "budget_exhausted",
+                }:
                     reports[name] = result
                     break
                 time.sleep(min(0.1, max(0, deadline - time.monotonic())))

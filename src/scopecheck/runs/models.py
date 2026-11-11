@@ -86,7 +86,9 @@ class Run(Record, Base):
             ["assistant_configs.workspace_id", "assistant_configs.id"],
         ),
         CheckConstraint(
-            "status IN ('queued', 'running', 'completed', 'failed')", name="run_status"
+            "status IN ('queued', 'running', 'completed', 'failed', "
+            "'completed_with_errors', 'budget_exhausted')",
+            name="run_status",
         ),
     )
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
@@ -95,7 +97,7 @@ class Run(Record, Base):
     idempotency_key: Mapped[str] = mapped_column(String(128))
     request_hash: Mapped[str] = mapped_column(String(64))
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    status: Mapped[str] = mapped_column(String(20), default="queued")
+    status: Mapped[str] = mapped_column(String(32), default="queued")
 
     total_cases: Mapped[int] = mapped_column(Integer, server_default="0")
     completed_cases: Mapped[int] = mapped_column(Integer, server_default="0")
@@ -112,17 +114,21 @@ class RunJob(Record, Base):
         ),
         UniqueConstraint("workspace_id", "run_id"),
         CheckConstraint(
-            "status IN ('queued', 'running', 'completed', 'failed')", name="job_status"
+            "status IN ('queued', 'running', 'completed', 'failed', "
+            "'completed_with_errors', 'budget_exhausted')",
+            name="job_status",
         ),
         Index("ix_run_jobs_claim", "status", "created_at"),
+        Index("ix_run_jobs_expiry", "status", "lease_expires_at"),
     )
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
     run_id: Mapped[UUID]
-    status: Mapped[str] = mapped_column(String(20), default="queued")
+    status: Mapped[str] = mapped_column(String(32), default="queued")
 
     lease_owner: Mapped[UUID | None]
     lease_generation: Mapped[int] = mapped_column(Integer, server_default="0")
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CaseAttempt(Record, Base):
@@ -133,6 +139,7 @@ class CaseAttempt(Record, Base):
         ),
         UniqueConstraint("workspace_id", "run_id", "case_id", "repetition"),
         CheckConstraint("repetition >= 1", name="attempt_repetition"),
+        CheckConstraint("attempt_number BETWEEN 1 AND 2", name="attempt_number_bound"),
         CheckConstraint(
             "status IN ('running', 'completed', 'limited', 'failed')",
             name="attempt_status",
@@ -143,6 +150,8 @@ class CaseAttempt(Record, Base):
     case_id: Mapped[str] = mapped_column(String)
     repetition: Mapped[int]
     lease_generation: Mapped[int]
+    attempt_number: Mapped[int] = mapped_column(Integer, server_default="1")
+    history: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, server_default="[]")
     worker_version: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -189,7 +198,19 @@ class CallReservation(Record, Base):
                 "case_attempts.repetition",
             ],
         ),
-        UniqueConstraint("workspace_id", "run_id", "case_id", "repetition", "sequence"),
+        UniqueConstraint(
+            "workspace_id",
+            "run_id",
+            "case_id",
+            "repetition",
+            "attempt_number",
+            "sequence",
+            name="reservation_attempt_sequence",
+        ),
+        UniqueConstraint("workspace_id", "run_id", "id", name="reservation_tenant_id"),
+        CheckConstraint(
+            "attempt_number BETWEEN 1 AND 2", name="reservation_attempt_bound"
+        ),
         CheckConstraint("sequence BETWEEN 1 AND 4", name="reservation_sequence"),
         CheckConstraint("amount_microusd > 0", name="reservation_positive"),
     )
@@ -198,8 +219,43 @@ class CallReservation(Record, Base):
     case_id: Mapped[str] = mapped_column(String)
     repetition: Mapped[int]
     sequence: Mapped[int]
+    attempt_number: Mapped[int] = mapped_column(Integer, server_default="1")
     lease_generation: Mapped[int]
     amount_microusd: Mapped[int] = mapped_column(BigInteger)
     price_hash: Mapped[str] = mapped_column(String(64))
-    # Reservations are append-only and never released in stage 5, including
-    # successful calls. A crash/timeout cannot silently replenish the budget.
+    # Immutable maxima; only a separate settlement can release known unused cost.
+
+
+class CallSettlement(Record, Base):
+    __tablename__ = "call_settlements"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "run_id", "reservation_id"],
+            [
+                "call_reservations.workspace_id",
+                "call_reservations.run_id",
+                "call_reservations.id",
+            ],
+        ),
+        UniqueConstraint("reservation_id"),
+        CheckConstraint(
+            "amount_microusd IS NULL OR amount_microusd >= 0",
+            name="settlement_nonnegative",
+        ),
+        CheckConstraint(
+            "(amount_microusd IS NULL AND input_tokens IS NULL AND output_tokens IS "
+            "NULL) OR "
+            "(amount_microusd IS NOT NULL AND input_tokens IS NOT NULL "
+            "AND output_tokens IS NOT NULL AND input_tokens >= 0 AND output_tokens "
+            ">= 0)",
+            name="settlement_usage",
+        ),
+    )
+    workspace_id: Mapped[UUID]
+    run_id: Mapped[UUID]
+    reservation_id: Mapped[UUID]
+    amount_microusd: Mapped[int | None] = mapped_column(BigInteger)
+    input_tokens: Mapped[int | None]
+    output_tokens: Mapped[int | None]
+    outcome: Mapped[str] = mapped_column(String(50))
+    returned_model: Mapped[str | None] = mapped_column(String)

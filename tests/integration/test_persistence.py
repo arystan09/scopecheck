@@ -48,7 +48,7 @@ async def test_clean_migration_and_repeat_upgrade(database):
         )
         assert (
             await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0003"
+            == "0004"
         )
         names = set(
             (
@@ -68,6 +68,7 @@ async def test_clean_migration_and_repeat_upgrade(database):
             "case_attempts",
             "case_results",
             "call_reservations",
+            "call_settlements",
         }
     await migration(database.url, "upgrade", "head")
     await migration(database.url, "check")

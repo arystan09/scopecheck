@@ -45,6 +45,9 @@ class Turn:
     input_tokens: int | None = None
     output_tokens: int | None = None
     model: str | None = None
+    status_code: int | None = None
+    retry_after: float | None = None
+    retryable: bool = True
 
 
 class Provider(Protocol):

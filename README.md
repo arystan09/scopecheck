@@ -1,13 +1,15 @@
 # ScopeCheck
 
-Milestone **5 of 10** adds an optional bounded OpenAI adapter to the milestone-4
-fake-provider MVP: a local synthetic order
+Milestone **6 of 10** adds bounded recovery, concurrency, explicit retries, and
+request-budget settlement to the fake/live runner. The milestone-4 fake-provider
+MVP remains: a local synthetic order
 sandbox, immutable datasets/configs, authenticated APIs, a separate PostgreSQL
 worker, per-case evidence, reports, comparisons, and a small Jinja/vanilla-JS UI.
 The fake workflow below needs no provider key. Live execution is available only
 through the local database-owner CLI with explicit pricing and spending authority.
 Operator bearer authentication is still
-required for all data reads/writes. Deep recovery belongs to milestone 6.
+required for all data reads/writes. The milestone-6 section below defines current
+recovery/budget behavior; earlier milestone verification sections are historical.
 
 ## MVP quickstart (Compose)
 
@@ -331,7 +333,7 @@ API behavior:
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /health/live` | Process liveness, no database required |
-| `GET /health/ready` | 200 only when the configured database has revision `0003`; otherwise safe 503 |
+| `GET /health/ready` | 200 only when the configured database has revision `0004`; otherwise safe 503 |
 | `POST /api/v1/datasets` | Editor-only raw dataset-v1 JSON; max 1 MiB and 100 cases; 201 new, 200 duplicate |
 | `GET /api/v1/datasets` | Workspace-owned version metadata with pagination |
 | `GET /api/v1/datasets/{id}` | Full owned immutable dataset, including private operator-side expectations |
@@ -680,3 +682,174 @@ built and inspected. Initial test-code errors and a child-logger leak regression
 were corrected before the final passing run. Docker Compose/build/start checks
 were attempted but unavailable because Docker is not installed; image execution
 and container parity remain unverified. No paid model smoke or remote CI ran.
+
+## Milestone 6: recovery, bounded concurrency, and budgets
+
+Migrate with `uv run alembic upgrade head` before starting the API or worker.
+Migration `0004` preserves existing datasets, snapshots, results, and maximum
+reservations. It adds deadline/expiry indexing, bounded attempt counters/history,
+and immutable `call_settlements`. Existing reservations without a settlement stay unknown and reserved; the
+migration does not retroactively price prior provenance or release money.
+
+### Worker and failure semantics
+
+- Each worker owns at most **one run**, with **two concurrent case slots**. Each
+  case/repetition starts at most **two attempts**. Two worker consumers bound task
+  allocation even for large fake runs.
+- A claim or takeover locks one eligible job with `FOR UPDATE SKIP LOCKED` and
+  atomically increments its generation. Active ownership expires after **30
+  seconds of PostgreSQL time**. A heartbeat runs every **5 seconds**. Short
+  fenced writes also renew the lease. Expired leases cannot be revived by their
+  old owner. Losing ownership cancels local execution.
+- Every result, settlement, and reservation checks owner, generation, running
+  status, and unexpired lease under the job lock. Concurrent same-worker claims
+  are serialized by a transaction-scoped advisory lock. Request reservation and
+  settlement share job→run lock ordering; no database transaction spans provider
+  execution or retry backoff.
+- A persisted final case result is reused, including a final failure; errors are
+  not retried as new cases. An interrupted case without a final result restarts
+  from its original synthetic state. Attempt history retains the interrupted
+  generation and timestamps. If both attempts were interrupted, recovery records
+  `attempt_limit`; it does not start a third attempt. The existing unique
+  run/case/repetition result constraint still prevents duplicate final results.
+- Each execution attempt has a **30-second deadline**, including provider calls,
+  reservations, and retry delays. A run has a **300-second execution deadline**
+  from its first claim, stored in PostgreSQL and unchanged by takeover. An
+  interrupted attempt can get a fresh attempt deadline, but not a fresh run
+  deadline. Queue wait is excluded. Once all final results exist, recovery can
+  finish the run without re-execution, even after its execution deadline.
+- `budget_exhausted` is a terminal partial run status. Other partially failed
+  runs use `completed_with_errors`. Neither implies that failed cases passed.
+  `complete`, raw failure/missing counts, and coverage remain explicit; legitimate
+  success includes only completed scored cases. The smoke script recognizes all
+  terminal statuses and still rejects incomplete or incorrect demo outcomes.
+
+**There is no exactly-once provider execution guarantee.** A remote request can
+continue after timeout, process death, or lease loss. A recovered attempt or
+explicit network retry can send another request while the earlier remote request
+is still in flight. The two-slot bound applies to current local execution, not
+orphaned remote work. Each dispatch gets its own reservation; old unknown maxima
+stay held. Late responses from a stale generation cannot overwrite results,
+settle old costs, or authorize more calls. Their pre-dispatch reservation,
+case/attempt/generation, and immutable run configuration remain visible as
+provenance with an unknown outcome. A healthy replacement worker and available
+PostgreSQL are required for recovery; repeated failures do not promise completion.
+
+### One explicit retry policy
+
+SDK retries remain disabled. The runner retries transient connection/time-out
+failures, HTTP 429, and **500/502/503/504** only, with at most **two retries per
+logical model turn**. All initial requests and retries together still count
+against **four model requests per case attempt** and the same spending budget.
+Tool calls remain bounded at six per live attempt. Denials are fed back as tool
+results; they are not transport retries. Refusal, authentication, schema,
+configuration, token-limit, and other HTTP errors are not retried. Known
+insufficient-quota and certificate/protocol configuration failures also stop.
+
+Backoff is `0.25 * 2^retry_index + uniform(0, 0.25)` seconds. A valid `Retry-After`
+(seconds or HTTP-date) is a minimum wait. Delays above **5 seconds**, invalid
+headers, or waits that cannot fit before the deadline cause termination, not a
+shortened wait. Clock, sleep, and randomness are injected in tests. This follows
+the official [OpenAI error guidance](https://developers.openai.com/api/docs/guides/error-codes)
+on respecting `Retry-After` while accounting for SDK retries.
+
+### Settlement and report fields
+
+Before every live request, a short transaction locks the job/run and requires:
+
+```text
+settled usage cost + outstanding/unknown maxima + new maximum <= run budget
+```
+
+Usage is settled only when both token counters are known, nonnegative integers
+within the snapshotted bounds. Cost is rounded upward using the immutable price
+snapshot. Known unused reservation value becomes available to later requests.
+Usage-free error responses, timeouts, unobserved delivery, or a crash remain
+unknown and keep the full maximum. A settlement cannot exceed its reservation;
+settlements and reservations are immutable. Identical settlement delivery is
+idempotent, while conflicting settlement evidence is rejected.
+
+The existing report `reserved_microusd` retains its historical meaning: the sum
+of all original maxima, including settled calls. New fields distinguish:
+
+| Field | Meaning |
+|---|---|
+| `spent_microusd` | Known usage priced at the configured conservative rates |
+| `outstanding_microusd` | Full maxima still held for unknown usage |
+| `budget_accounted_microusd` | Spent plus outstanding, used for budget enforcement |
+| `unknown_reservations` | Calls without known-usage settlement, including interrupted and legacy calls |
+| `request_ledger` | Per-request attempt/generation, outcome, token counts, maximum and settlement |
+
+These are synthetic-tool evaluation accounting values, not verified provider
+invoices. Accuracy still depends on owner-reviewed prices and model ceilings;
+cache discounts are not assumed. New runs snapshot execution policy version 2.
+Legacy immutable snapshots are preserved, and their outstanding work executes
+under the current bounded worker. Comparisons reject differing snapshotted
+execution policies rather than silently comparing changed execution conditions.
+
+### PostgreSQL queue tradeoff and throughput limit
+
+A PostgreSQL queue keeps ownership, evidence, and budget accounting atomic in the
+same database, without another service. The tradeoff is frequent short database
+transactions and row-lock contention: budget operations for a run are serialized.
+There is one claimed run and at most two active case executions per worker, a
+one-second idle polling interval, and five-second heartbeats. This intentionally
+limits throughput for a small developer sandbox. No jobs/second benchmark or
+production-scale capacity claim is made; adding workers increases database
+traffic and cannot increase concurrency within a single run beyond two slots.
+The 300-second deadline can leave a large/slow run partially covered.
+
+### Run and verify recovery
+
+Prerequisites remain Python 3.12, uv 0.13.7, and PostgreSQL 18. The default path is
+keyless and fake-only. With the existing local `SCOPECHECK_DATABASE_URL`, workspace,
+and dataset configured:
+
+```sh
+uv sync --frozen --all-groups
+uv run alembic upgrade head
+uv run scopecheck demo seed --workspace local
+uv run scopecheck worker
+```
+
+Run the API separately with `make run` (or use the Compose quickstart). Restart a
+stopped worker with the same command; it polls for expired jobs automatically.
+Do not delete volumes, manually requeue jobs, or reuse an interrupted sandbox's
+mutated state. Live creation still requires the explicit local-owner CLI and
+worker-only key described above; no paid verification is implied or authorized.
+
+```sh
+make check
+# Disposable PostgreSQL 18 admin connection; tests create/drop their own databases.
+export SCOPECHECK_TEST_ADMIN_URL='postgresql+psycopg://scopecheck@127.0.0.1:5432/postgres'
+uv run pytest tests/integration/test_worker_recovery.py tests/integration/test_budget_concurrency.py
+uv run pytest -m integration
+uv run pytest -m e2e
+docker compose config
+docker build -t scopecheck:local .
+docker compose up --build -d
+uv run python scripts/demo_smoke.py
+```
+
+Recovery tests use independent processes/connections and pipe/thread barriers.
+They kill workers during execution and after a mocked provider request boundary,
+including after a synthetic refund has executed but before its final result.
+Lease expiry is advanced deterministically in PostgreSQL; recovery must finish
+before a ten-second test deadline. Heartbeat tests inject the five-second sleep
+boundary. These are explicit failure-injection tests, not a measured production
+recovery SLA. CI's existing real-PostgreSQL integration step collects both new
+suites; no provider key or new service is required.
+
+Already-running legacy jobs receive a deadline based on their original
+`started_at`; a job already older than 300 seconds may terminate partially on
+upgrade. Terminal MVP results are preserved. Recovery never gives an expired
+run a fresh five-minute execution window.
+
+Local milestone-6 verification passed: frozen sync, dataset validation and all
+three scripted replays, Ruff lint/format (65 Python files), strict mypy (38 source
+files), 190 unit tests, 82 real PostgreSQL integration tests, and one native
+API/worker e2e demo smoke. The dedicated recovery/budget command passed 17 tests;
+provider/retry checks passed 87 tests (subsets of the totals above). Source/wheel
+builds and their contents were verified. Docker config/build/start were attempted
+but unavailable (`docker: command not found`), so container runtime/parity remains
+unverified. No paid live smoke or remote CI run was performed for this stage.

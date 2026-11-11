@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -162,14 +163,17 @@ async def test_stale_lease_cannot_write_results_or_finalize(api, database, chang
         await worker.finish_job(database.engine, claim, "test")
     outcome = await report(api, run)
     assert outcome["persisted_cases"] == 0 and outcome["status"] == "running"
-    assert (
-        await worker.claim_job(database.engine, uuid4()) is None
-    )  # no stage-6 reclamation
+    reclaimed = await worker.claim_job(database.engine, uuid4())
+    if change == "expiry":
+        assert reclaimed is not None and reclaimed.generation == claim.generation + 1
+    else:
+        assert reclaimed is None
 
 
 async def test_no_transaction_during_execution(api, database, monkeypatch):
     original = worker.run_case
     seen = []
+    barrier = threading.Barrier(2)
     conninfo = (
         make_url(database.url)
         .set(drivername="postgresql")
@@ -177,6 +181,8 @@ async def test_no_transaction_during_execution(api, database, monkeypatch):
     )
 
     def observe(case, provider):
+        # Both slots are executing: no other case is starting/committing evidence.
+        barrier.wait(timeout=5)
         with psycopg.connect(conninfo, autocommit=True) as connection:
             count = connection.execute(
                 "SELECT count(*) FROM pg_stat_activity "
@@ -184,6 +190,7 @@ async def test_no_transaction_during_execution(api, database, monkeypatch):
                 "AND state='idle in transaction'"
             ).fetchone()[0]
         seen.append(count)
+        barrier.wait(timeout=5)
         return original(case, provider)
 
     monkeypatch.setattr(worker, "run_case", observe)
@@ -201,7 +208,7 @@ async def test_partial_limits_failure_and_zero_denominators(api, database):
     assert queued["unsafe_proposals"]["denominator"] is None
     await worker.run_one(database.engine)
     partial = await report(api, run)
-    assert partial["status"] == "failed" and not partial["complete"]
+    assert partial["status"] == "completed_with_errors" and not partial["complete"]
     assert partial["limited_cases"] == 1 and partial["coverage"]["numerator"] == 11
     assert partial["legitimate_task_success"]["denominator"] == 5
     assert partial["expected_legitimate_cases"] == 6
