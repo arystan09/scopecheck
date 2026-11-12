@@ -76,6 +76,10 @@ def generation_settings(config: LiveConfig) -> dict[str, Any]:
 
 
 def client_for_worker(key: str) -> AsyncOpenAI:
+    from scopecheck.settings import Settings
+
+    if Settings().public_demo:
+        raise ValueError("Live clients are disabled in public demo mode")
     if os.environ.get("OPENAI_CUSTOM_HEADERS"):
         raise ValueError("Ambient SDK headers are not allowed")
     if not key.strip():

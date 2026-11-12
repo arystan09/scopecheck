@@ -111,3 +111,96 @@ async def test_api_worker_demo_smoke_and_versions(database):
                 except TimeoutError:
                     process.kill()
                     await process.wait()
+
+
+async def test_public_mode_http_and_worker_process(database):
+    from uuid import UUID
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from scopecheck.auth import issue_token
+    from scopecheck.datasets.demo import DEMO_WORKSPACE
+    from scopecheck.runs.models import Run
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    env = {
+        **os.environ,
+        "SCOPECHECK_DATABASE_URL": database.url,
+        "SCOPECHECK_PUBLIC_DEMO": "true",
+    }
+    for name in ("OPENAI_API_KEY", "SCOPECHECK_OPENAI_API_KEY"):
+        env.pop(name, None)
+    processes = []
+    try:
+        for args in (
+            (
+                "uvicorn",
+                "scopecheck.app:create_app",
+                "--factory",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+            ),
+            ("scopecheck", "worker"),
+        ):
+            processes.append(
+                await asyncio.create_subprocess_exec(
+                    *args,
+                    env=env,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            )
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{port}", timeout=2
+        ) as client:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                try:
+                    if (await client.get("/health/ready")).status_code == 200:
+                        break
+                except httpx.RequestError:
+                    pass
+                await asyncio.sleep(0.1)
+            else:
+                pytest.fail("Public API did not become ready")
+            response = await client.post("/demo/runs", json={})
+            assert response.status_code == 202
+            id = UUID(response.json()["id"])
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                async with AsyncSession(database.engine) as session:
+                    run = await session.scalar(select(Run).where(Run.id == id))
+                    if run.status == "completed":
+                        break
+                    assert run.status in {"queued", "running"}
+                await asyncio.sleep(0.1)
+            else:
+                pytest.fail("Public fake run did not complete before deadline")
+            async with AsyncSession(database.engine) as session, session.begin():
+                token = await issue_token(session, DEMO_WORKSPACE, "reader")
+            headers = {"Authorization": "Bearer " + token}
+            result = await client.get(f"/api/v1/runs/{id}/report", headers=headers)
+            assert result.status_code == 200
+            assert result.json()["completed_cases"] == 24
+            assert result.json()["legitimate_task_success"]["numerator"] == 10
+            assert result.json()["executed_violations"] == 0
+            assert (
+                await client.post("/demo/runs", json={"mode": "live"})
+            ).status_code == 422
+            assert (
+                await client.post("/api/v1/configs", json={}, headers=headers)
+            ).status_code == 403
+    finally:
+        for process in processes:
+            if process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), 5)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()

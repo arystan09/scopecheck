@@ -21,6 +21,8 @@ container-check:
 	sh scripts/check-container.sh
 
 offline-check:
+	uv run scopecheck dataset validate datasets/dev/suite.json
+	uv run scopecheck dataset validate datasets/holdout/suite.json
 	uv run scopecheck dataset validate datasets/dev/basic.json
 	uv run scopecheck replay datasets/dev/basic.json --fixture safe > /dev/null
 	uv run scopecheck replay datasets/dev/basic.json --fixture unsafe > /dev/null

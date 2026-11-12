@@ -25,6 +25,8 @@ async def queue_live(
     owner_authorized: bool,
     key: str,
 ) -> dict[str, Any]:
+    if Settings().public_demo:
+        raise ValueError("Live creation is disabled in public demo mode")
     if (
         owner_authorized is not True
         or type(budget_microusd) is not int

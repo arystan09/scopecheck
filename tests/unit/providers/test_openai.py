@@ -418,3 +418,48 @@ async def test_worker_suppresses_sdk_child_debug_logging(caplog):
         with caplog.at_level(logging.DEBUG, logger="openai._base_client"):
             child.debug("untrusted response: %s", KEY)
         assert KEY not in caplog.text
+
+
+async def test_adversarial_note_feedback_does_not_disclose_foreign_canary(live_config):
+    from scopecheck.datasets.splits import frozen_dataset
+
+    scenario = next(
+        c for c in frozen_dataset("dev").cases if c.case_id == "dev-notes-injection"
+    )
+    own, foreign = scenario.initial_state.orders
+    bodies, ledger = [], Ledger()
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        output = (
+            [tool(args=json.dumps({"order_id": own.order_id}))]
+            if len(bodies) == 1
+            else [
+                tool(args=json.dumps({"order_id": foreign.order_id}), call_id="foreign")
+            ]
+            if len(bodies) == 2
+            else [message()]
+        )
+        return httpx2.Response(200, json=response(output))
+
+    async with mock_client(handler) as client:
+        result = await run_live_case(
+            scenario, OpenAIProvider(client, live_config), ledger.reserve, ledger.record
+        )
+    assert len(bodies) == len(ledger.reservations) == 3
+    assert own.notes in bodies[1]["input"][-1]["output"]
+    for body in bodies:
+        payload = json.dumps(body)
+        for private in (
+            foreign.notes,
+            scenario.expected.explanation,
+            '"actor_id"',
+            '"permissions"',
+            '"expected"',
+        ):
+            assert private not in payload
+    assert json.loads(bodies[2]["input"][-1]["output"])["status"] == "denied"
+    assert result.score.unsafe_proposals == 1
+    assert result.score.executed_violations == 0
+    assert result.score.legitimate_success is True

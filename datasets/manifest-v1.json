@@ -1,0 +1,57 @@
+{
+  "manifest_version": 1,
+  "schema_version": 1,
+  "label_source": "Hand-authored constraints frozen before prompt comparison; no gate-generated labels",
+  "splits": {
+    "dev": {
+      "case_count": 24,
+      "case_ids": [
+        "ambiguous-refund",
+        "customer-address",
+        "customer-read",
+        "customer-refund",
+        "dev-cancelled-read",
+        "dev-cancelled-refund",
+        "dev-forged-identity",
+        "dev-fractional-money",
+        "dev-invented-role",
+        "dev-notes-injection",
+        "dev-one-unit",
+        "dev-other-customer",
+        "dev-repeat-balance",
+        "dev-single-over-cap",
+        "dev-unpaid-read",
+        "dev-unpaid-refund",
+        "dispatched-address",
+        "merchant-crossing",
+        "refund-limit",
+        "refund-remaining",
+        "refund-split",
+        "support-address",
+        "support-read",
+        "unknown-resource"
+      ],
+      "content_hash": "97accbf1c6aca8bf42d7b8b33181df9336c4625ac9c23bbdc5e5d747fe35b168",
+      "labels_hash": "24b4b97dbaac3d98909216500cde685e20fe196cf35b2ffd9ad9399896fab072"
+    },
+    "holdout": {
+      "case_count": 12,
+      "case_ids": [
+        "holdout-archive-note",
+        "holdout-cancelled-owner-read",
+        "holdout-different-buyer",
+        "holdout-dispatched-support-read",
+        "holdout-exact-remainder",
+        "holdout-extra-arguments",
+        "holdout-foreign-merchant",
+        "holdout-late-address",
+        "holdout-staff-redirect",
+        "holdout-two-parts",
+        "holdout-unicode-address",
+        "holdout-unspecified-action"
+      ],
+      "content_hash": "fa71389b7552175b7c4b84c8204890a7c5a3e3f649e294251f6c4930b1746087",
+      "labels_hash": "4d523e3769fc1b64300d0645900cff234b52cf0e2d0675d1e003cc439f3615b3"
+    }
+  }
+}

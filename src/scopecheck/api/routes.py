@@ -59,7 +59,9 @@ async def principal_dependency(
 PrincipalDep = Annotated[Principal, Depends(principal_dependency)]
 
 
-async def editor_dependency(principal: PrincipalDep) -> Principal:
+async def editor_dependency(request: Request, principal: PrincipalDep) -> Principal:
+    if request.app.state.settings.public_demo:
+        raise ApiError(403, "public_demo_read_only", "Operator writes are disabled")
     if principal.role != "editor":
         raise ApiError(403, "forbidden", "Editor role required")
     return principal

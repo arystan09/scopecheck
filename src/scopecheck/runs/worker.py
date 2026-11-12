@@ -433,6 +433,21 @@ async def execute_claim(
 
 
 async def execute_cases(engine: AsyncEngine, claim: Claim, lease_seconds: int) -> None:
+    if Settings().public_demo:
+        from scopecheck.datasets.demo import DEMO_WORKSPACE, fixed_hash
+        from scopecheck.datasets.splits import MANIFEST_HASH
+
+        if (
+            claim.workspace_id != DEMO_WORKSPACE
+            or claim.snapshot.get("mode") != "fake"
+            or claim.snapshot.get("demo_manifest") != MANIFEST_HASH
+            or claim.snapshot.get("dataset_hash") != fixed_hash()
+            or claim.config != {"mode": "fake", "fixture": "safe"}
+            or claim.snapshot.get("repetitions") != 1
+            or claim.snapshot.get("limits") != {"max_tool_calls": 20}
+        ):
+            await finish_job(engine, claim, "public_demo_only", lease_seconds)
+            return
     dataset = Dataset.model_validate(claim.dataset)
     config = (
         LiveConfig.model_validate(claim.config)

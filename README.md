@@ -1,14 +1,13 @@
 # ScopeCheck
 
-Milestone **6 of 10** adds bounded recovery, concurrency, explicit retries, and
-request-budget settlement to the fake/live runner. The milestone-4 fake-provider
-MVP remains: a local synthetic order
-sandbox, immutable datasets/configs, authenticated APIs, a separate PostgreSQL
+Milestone **7 of 10** adds frozen evaluation splits, access-boundary checks, and
+an opt-in bounded public fake demo to the recovered fake/live runner. The
+milestone-4 fake-provider MVP remains: a local synthetic order sandbox, immutable datasets/configs, authenticated APIs, a separate PostgreSQL
 worker, per-case evidence, reports, comparisons, and a small Jinja/vanilla-JS UI.
 The fake workflow below needs no provider key. Live execution is available only
 through the local database-owner CLI with explicit pricing and spending authority.
-Operator bearer authentication is still
-required for all data reads/writes. The milestone-6 section below defines current
+Operator bearer authentication is still required for operator data reads/writes. The opt-in public demo admits only fixed
+fake work without a token. The milestone-6 section below defines current
 recovery/budget behavior; earlier milestone verification sections are historical.
 
 ## MVP quickstart (Compose)
@@ -853,3 +852,123 @@ provider/retry checks passed 87 tests (subsets of the totals above). Source/whee
 builds and their contents were verified. Docker config/build/start were attempted
 but unavailable (`docker: command not found`), so container runtime/parity remains
 unverified. No paid live smoke or remote CI run was performed for this stage.
+
+## Milestone 7: frozen boundaries and constrained public fake work
+
+The frozen development/held-out suites contain 24/12 hand-labelled synthetic cases.
+The original basic suite remains unchanged. See [evaluation.md](docs/evaluation.md)
+for hashes, label freeze, independent oracle tests and the narrow structured-canary
+coverage. See [ADR 0007](docs/threat-model.md) for the complete operator route audit,
+public quota semantics and limitations. No prompts were tuned from holdout outcomes.
+No unrestricted natural-language leakage or live-model safety measurement is claimed.
+
+Existing local UI/API/fake comparisons and explicitly authorized local live runs
+remain available with `SCOPECHECK_PUBLIC_DEMO` absent/false. Bodies now have a
+five-second receipt deadline and actual-byte limits: datasets 1 MiB, other operator
+writes 16 KiB, public admission 64 bytes. Oversized bodies return 413 before JSON
+parsing; slow bodies return 408. The API still accepts at most 100 cases/import.
+
+### Run the public fake path locally
+
+Prerequisites: Docker Engine/Desktop and Compose v2 (or Python 3.12, uv 0.13.7 and
+PostgreSQL 18 for native processes). Use a **separate disposable deployment/database**;
+public mode intentionally fails previously queued non-demo work without executing it.
+Set public mode on every API and worker process. No provider credential may be
+present, including an empty credential variable. Nothing here publishes a server.
+
+```sh
+unset SCOPECHECK_OPENAI_API_KEY OPENAI_API_KEY
+export SCOPECHECK_PUBLIC_DEMO=true
+export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+# Run in a fresh Compose project; retain this generated password for later restarts.
+docker compose -p scopecheck-public up --build -d
+curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-all-errors \
+  --max-time 2 --retry-max-time 45 http://127.0.0.1:8000/health/ready
+curl --fail --silent --show-error -X POST http://127.0.0.1:8000/demo/runs \
+  -H 'Content-Type: application/json' --data '{}'
+```
+
+Stop other local stacks on ports 8000/5432 first, or set `SCOPECHECK_HTTP_PORT` and
+`SCOPECHECK_DB_PORT` and use the matching HTTP URL. Migration 0005 runs through the
+Compose migrate service. Both app/worker use the same image/package; Compose passes
+public mode to both and forwards no provider key. This container path must pass
+Docker verification in your environment before treating it as verified.
+
+For native execution against an already-created disposable PostgreSQL 18 database,
+set `SCOPECHECK_DATABASE_URL` to its `postgresql+psycopg` URL, then run:
+
+```sh
+unset SCOPECHECK_OPENAI_API_KEY OPENAI_API_KEY
+export SCOPECHECK_PUBLIC_DEMO=true
+uv sync --frozen --all-groups
+uv run alembic upgrade head
+uv run uvicorn scopecheck.app:create_app --factory --host 127.0.0.1 --port 8000
+# In a second terminal with the same database/public-mode environment:
+uv run scopecheck worker
+# In a third terminal:
+curl --fail --silent --show-error -X POST http://127.0.0.1:8000/demo/runs --data '{}'
+```
+
+A 202 response contains the queued run ID, `mode: fake` and `synthetic: true`.
+The server chooses the frozen development dataset, safe fixture, one repetition and
+20-tool-call bound; the worker completes 24 cases with 10 legitimate goals. No
+client-supplied dataset, model, prompt, URL, fixture, identity or budget is accepted.
+Queries and nonempty objects are rejected. Public mode disables all ordinary write
+APIs and live CLI/client/reservation paths. Operator reads remain authenticated.
+
+Admission is global across API processes: maximum **100 lifetime runs**, **two
+queued/running demo jobs**, and **one admission per five database-clock seconds**.
+429 indicates a limit; retry later only if the lifetime cap is not exhausted.
+Restarts do not reset counters. There is no public reset API and no per-client
+fairness. Completion frees a queue slot but not a lifetime admission. This is a
+small synthetic demo, not general internet abuse protection or a throughput SLA.
+
+For inspection after the first admission, a trusted local database administrator
+can issue a reader token without enabling public writes:
+
+```sh
+docker compose -p scopecheck-public exec app scopecheck db token-create \
+  --workspace scopecheck-public-demo --role reader
+# Native alternative:
+uv run scopecheck db token-create --workspace scopecheck-public-demo --role reader
+```
+
+Keep that one-time token private; paste it into `/ui` to inspect the run/report.
+The UI keeps it in memory only. There are no anonymous report endpoints. Stop the
+isolated Compose deployment with `docker compose -p scopecheck-public down`; this
+preserves its database/quota. Do not reuse it for local live work.
+
+### Milestone-7 checks
+
+```sh
+uv sync --frozen --all-groups
+make check
+uv run scopecheck dataset validate datasets/dev/suite.json
+uv run scopecheck dataset validate datasets/holdout/suite.json
+# Set SCOPECHECK_TEST_ADMIN_URL to a disposable PostgreSQL 18 admin URL.
+uv run pytest tests/integration/test_access_boundaries.py tests/integration/test_demo_limits.py
+uv run pytest tests/integration/test_worker_recovery.py tests/integration/test_budget_concurrency.py
+uv run pytest -m integration
+uv run pytest -m e2e
+uv run pytest tests/unit/providers
+uv run scopecheck run live --help
+docker compose config
+docker build -t scopecheck:local .
+```
+
+For normal fake Compose smoke, unset `SCOPECHECK_PUBLIC_DEMO` first, follow the
+original local quickstart and run `uv run python scripts/demo_smoke.py`. CI's real
+PostgreSQL job runs all integration/e2e tests, including the new process quota races
+and public API/worker path; `make check` validates both frozen suites. Remote CI is
+pending until an actual run completes.
+
+Verification recorded on 2026-11-11: frozen sync, `make check` (223 unit tests),
+68 provider tests, both dataset validations, all development trace variants, and
+96 real PostgreSQL tests (94 integration plus two process e2e) passed. The 12 named
+access/demo tests passed, including independent-process quota races. Clean migration,
+0004 upgrade preservation, existing recovery/budget races, fake comparison smoke and
+a separate public API/worker process flow passed against local PostgreSQL 18.6.
+Source/wheel builds and frozen data loading from the wheel passed. No selected test
+was skipped. No paid request was made. Docker commands returned `command not found`;
+Compose, image build/non-root/container-health acceptance remain unverified locally.
+CI configuration includes these checks, but a new remote CI execution is pending.

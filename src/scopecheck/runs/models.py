@@ -259,3 +259,16 @@ class CallSettlement(Record, Base):
     output_tokens: Mapped[int | None]
     outcome: Mapped[str] = mapped_column(String(50))
     returned_model: Mapped[str | None] = mapped_column(String)
+
+
+class DemoAdmission(Base):
+    """One global lock/counter, shared by every public API process."""
+
+    __tablename__ = "demo_admission"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="demo_singleton"),
+        CheckConstraint("admitted >= 0 AND admitted <= 100", name="demo_total_bound"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    admitted: Mapped[int] = mapped_column(Integer, server_default="0")
+    last_admitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

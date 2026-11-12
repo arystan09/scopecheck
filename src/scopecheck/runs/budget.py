@@ -11,6 +11,7 @@ from scopecheck.providers.base import Turn
 from scopecheck.providers.config import LiveConfig
 from scopecheck.runs.models import CallReservation, CallSettlement, CaseAttempt, Run
 from scopecheck.runs.service import digest
+from scopecheck.settings import Settings
 
 if TYPE_CHECKING:
     from scopecheck.runs.worker import Claim
@@ -30,6 +31,8 @@ async def reserve_call(
 ) -> UUID:
     from scopecheck.runs.worker import owned_job
 
+    if Settings().public_demo:
+        raise ValueError("Live reservations are disabled in public demo mode")
     config.price.require_current()
     amount = config.maximum_charge()
     async with AsyncSession(engine) as session, session.begin():

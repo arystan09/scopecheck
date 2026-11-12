@@ -1,8 +1,9 @@
 """Public app settings; the worker reads its provider key separately."""
 
+import os
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -17,6 +18,18 @@ class Settings(BaseSettings):
 
     # Public API creation stays fake-only; live runs require local owner authority.
     mode: Literal["fake"] = "fake"
+    public_demo: bool = Field(default=False, exclude=True)
+
+    @model_validator(mode="after")
+    def public_has_no_key(self) -> "Settings":
+        if self.public_demo and any(
+            name in os.environ
+            for name in ("SCOPECHECK_OPENAI_API_KEY", "OPENAI_API_KEY")
+        ):
+            raise ValueError(
+                "Public demo requires no provider credential in the environment"
+            )
+        return self
 
     database_url: SecretStr | None = Field(default=None, repr=False, exclude=True)
     code_revision: str = Field(

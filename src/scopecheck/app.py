@@ -15,6 +15,8 @@ from starlette.exceptions import HTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from scopecheck.api.bounds import RequestBounds
+from scopecheck.api.demo import router as demo_router
 from scopecheck.api.errors import ApiError
 from scopecheck.api.routes import router
 from scopecheck.db import create_engine
@@ -60,6 +62,7 @@ def create_app() -> FastAPI:
         docs_url=None,
         redoc_url=None,
     )
+    app.add_middleware(RequestBounds)
     app.state.engine = engine
     app.state.settings = settings
 
@@ -118,4 +121,5 @@ def create_app() -> FastAPI:
     app.include_router(ui_router)
     app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
     app.include_router(router)
+    app.include_router(demo_router)
     return app

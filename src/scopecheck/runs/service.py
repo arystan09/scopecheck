@@ -80,6 +80,8 @@ async def create_run(
     body: RunInput,
     key: str,
     code_revision: str,
+    *,
+    demo_manifest: str | None = None,
 ) -> tuple[Run, bool]:
     dataset = await session.scalar(
         select(DatasetVersion).where(
@@ -112,6 +114,8 @@ async def create_run(
         "repetitions": body.repetitions,
         "limits": body.limits.model_dump(),
     }
+    if demo_manifest is not None:
+        snapshot["demo_manifest"] = demo_manifest
     return await queue_run(
         session, workspace_id, dataset, config, key, request_hash, snapshot
     )

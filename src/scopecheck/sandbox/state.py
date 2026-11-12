@@ -27,6 +27,8 @@ class Order(StrictModel):
     paid: bool
     status: Literal["pending", "dispatched", "cancelled"]
     address: Text
+    # Omit absent notes to preserve all pre-milestone-7 dataset hashes.
+    notes: Text | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_balance(self) -> "Order":
