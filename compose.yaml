@@ -21,13 +21,7 @@ services:
     environment:
       SCOPECHECK_DATABASE_URL: postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD:?Set a generated local POSTGRES_PASSWORD}@db:5432/scopecheck
     depends_on:
-      collector:
-    image: cr.jaegertracing.io/jaegertracing/jaeger:2.23.0
-    profiles: [observability]
-    ports:
-      - "127.0.0.1:16686:16686"
-      - "127.0.0.1:4318:4318"
-  db:
+      db:
         condition: service_healthy
   worker:
     image: scopecheck:local
@@ -42,6 +36,12 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+  collector:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.23.0
+    profiles: [observability]
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4318:4318"
   db:
     image: postgres:18
     ports:

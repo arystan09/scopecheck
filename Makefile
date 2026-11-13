@@ -16,7 +16,8 @@ run:
 	uv run uvicorn scopecheck.app:create_app --factory --host 127.0.0.1 --port 8000
 
 container-check:
-	docker compose config
+	docker compose config --quiet
+	docker compose --profile observability config --quiet
 	docker build -t scopecheck:local .
 	sh scripts/check-container.sh
 
