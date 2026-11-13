@@ -13,6 +13,7 @@ from scopecheck.api.errors import ApiError
 from scopecheck.datasets.canonicalize import canonical_json
 from scopecheck.datasets.schemas import Fixture
 from scopecheck.runs.models import AssistantConfig, DatasetVersion, Run, RunJob
+from scopecheck.telemetry import traceparent
 
 
 class RequestModel(BaseModel):
@@ -159,7 +160,12 @@ async def queue_run(
     )
     if record is not None:
         session.add(
-            RunJob(workspace_id=workspace_id, run_id=record.id, status="queued")
+            RunJob(
+                workspace_id=workspace_id,
+                run_id=record.id,
+                status="queued",
+                trace_parent=traceparent(),
+            )
         )
         await session.flush()
         return record, True

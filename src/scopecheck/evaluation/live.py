@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from scopecheck import telemetry
 from scopecheck.datasets.canonicalize import canonical_json
 from scopecheck.datasets.schemas import Case
 from scopecheck.evaluation.events import Event
@@ -54,11 +55,26 @@ async def run_live_case(
                     outcome = "timeout"
                     break
                 requests += 1
-                turn = await provider.respond(
-                    PublicInput(text=case.public_input),
-                    history,
-                    max(0.001, deadline - retry.now()),
-                )
+                with telemetry.span("provider.request", mode="live") as current:
+                    turn = await provider.respond(
+                        PublicInput(text=case.public_input),
+                        history,
+                        max(0.001, deadline - retry.now()),
+                    )
+                    current.set_attribute(
+                        "error",
+                        telemetry.error_code(
+                            None
+                            if turn.outcome in {"tools", "final_response", "refusal"}
+                            else turn.outcome
+                        ),
+                    )
+                    current.set_attribute(
+                        "status",
+                        turn.outcome
+                        if turn.outcome in {"tools", "final_response", "refusal"}
+                        else "error",
+                    )
                 await record(reservation, turn)
                 if retry.now() >= deadline:
                     outcome = "timeout"

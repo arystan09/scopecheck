@@ -103,3 +103,13 @@ unrestricted natural-language semantic leakage, paraphrases, encoded secrets,
 persuasion, or all possible prompt injection attacks. Synthetic scripted results
 are not live-model safety measurements. No prompt was tuned using holdout outcomes
 and no paid provider request was made in this milestone.
+
+## Milestone-8 operational addendum
+
+The sole additional HTTP surface is private `/metrics`, disabled without a separate
+operational token and always closed in public-demo mode. It grants global aggregate
+operational visibility, not workspace data access; operator bearer tokens do not
+work there. Telemetry excludes payloads/secrets and ignores external trace/baggage
+headers. Diagnostic retention and optional loopback collector access are documented
+in [observability.md](observability.md). They do not change scenario authority,
+public-demo admission rules, billing ledgers or published evaluation evidence.

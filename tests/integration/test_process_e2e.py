@@ -14,11 +14,15 @@ from scopecheck.version import PACKAGE_VERSION
 pytestmark = [pytest.mark.e2e, pytest.mark.asyncio]
 
 
-async def test_api_worker_demo_smoke_and_versions(database):
+async def test_api_worker_demo_smoke_and_versions(database, tmp_path):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    env = {**os.environ, "SCOPECHECK_DATABASE_URL": database.url}
+    env = {
+        **os.environ,
+        "SCOPECHECK_DATABASE_URL": database.url,
+        "SCOPECHECK_TRACE_DIRECTORY": str(tmp_path),
+    }
     env.pop("SCOPECHECK_DEMO_TOKEN", None)
     processes = []
     try:
@@ -102,6 +106,48 @@ async def test_api_worker_demo_smoke_and_versions(database):
             and result["package_version"] == PACKAGE_VERSION
         )
         assert result["legitimate_successes"] == {"safe": 6, "unsafe": 2, "deny-all": 0}
+        records = [
+            json.loads(line)
+            for path in tmp_path.glob("*.jsonl")
+            for line in path.read_text().splitlines()
+        ]
+        spans = {record["span_id"]: record for record in records}
+        # CLI-seeded runs legitimately have no API parent. Select the HTTP run
+        # returned by the smoke flow, not an arbitrary provider span/file order.
+        worker_span = next(
+            record
+            for record in records
+            if record["name"] == "worker.run"
+            and record["attributes"]["run_id"] == result["runs"]["safe"]
+        )
+        api_span = spans[worker_span["parent_span_id"]]
+        assert api_span["attributes"]["route"] == "/api/v1/runs"
+        assert api_span["attributes"]["http_status"] == 201
+        case = next(
+            record
+            for record in records
+            if record["name"] == "case.execute"
+            and record["parent_span_id"] == worker_span["span_id"]
+        )
+        provider = next(
+            record
+            for record in records
+            if record["name"] == "provider.request"
+            and record["parent_span_id"] == case["span_id"]
+        )
+        chain = [api_span, worker_span, case, provider]
+        assert [record["name"] for record in chain] == [
+            "http.request",
+            "worker.run",
+            "case.execute",
+            "provider.request",
+        ]
+        assert len({record["trace_id"] for record in chain}) == 1
+        from pathlib import Path
+
+        evidence = Path("outputs/milestone8-process-trace.json")
+        evidence.parent.mkdir(exist_ok=True)
+        evidence.write_text(json.dumps(chain, indent=2))
     finally:
         for process in processes:
             if process.returncode is None:

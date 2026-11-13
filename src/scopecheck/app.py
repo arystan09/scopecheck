@@ -1,5 +1,6 @@
 """Liveness remains independent; readiness checks the migrated database."""
 
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -15,9 +16,11 @@ from starlette.exceptions import HTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from scopecheck import telemetry
 from scopecheck.api.bounds import RequestBounds
 from scopecheck.api.demo import router as demo_router
 from scopecheck.api.errors import ApiError
+from scopecheck.api.metrics import router as metrics_router
 from scopecheck.api.routes import router
 from scopecheck.db import create_engine
 from scopecheck.settings import Settings
@@ -33,6 +36,7 @@ class Liveness(BaseModel):
 def error_response(
     request: Request, status: int, code: str, message: str
 ) -> JSONResponse:
+    request.state.telemetry_error = telemetry.error_code(code)
     headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
     return JSONResponse(
         status_code=status,
@@ -47,6 +51,7 @@ def error_response(
 
 def create_app() -> FastAPI:
     settings = Settings()
+    telemetry.configure(settings.trace_directory, settings.collector)
     engine = create_engine(settings) if settings.database_url is not None else None
 
     @asynccontextmanager
@@ -71,16 +76,32 @@ def create_app() -> FastAPI:
         request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         request.state.request_id = str(uuid4())
-        try:
-            response = await call_next(request)
-        except SQLAlchemyError:
-            response = error_response(
-                request, 503, "database_unavailable", "Database is unavailable"
+        started = time.perf_counter()
+        # Never trust external trace/baggage headers or record raw URLs/queries.
+        with telemetry.span(
+            "http.request", request_id=request.state.request_id
+        ) as current:
+            try:
+                response = await call_next(request)
+            except SQLAlchemyError:
+                response = error_response(
+                    request, 503, "database_unavailable", "Database is unavailable"
+                )
+            except Exception:
+                response = error_response(
+                    request, 500, "internal_error", "Internal server error"
+                )
+            route = getattr(request.scope.get("route"), "path", "unmatched")
+            route = route if route in telemetry.ROUTES else "unmatched"
+            current.set_attribute("route", route)
+            current.set_attribute("http_status", response.status_code)
+            current.set_attribute(
+                "status", "error" if response.status_code >= 400 else "ok"
             )
-        except Exception:
-            response = error_response(
-                request, 500, "internal_error", "Internal server error"
+            current.set_attribute(
+                "error", getattr(request.state, "telemetry_error", "none")
             )
+            telemetry.observe_http(route, response.status_code, started)
         response.headers["X-Request-ID"] = request.state.request_id
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -122,4 +143,5 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
     app.include_router(router)
     app.include_router(demo_router)
+    app.include_router(metrics_router)
     return app

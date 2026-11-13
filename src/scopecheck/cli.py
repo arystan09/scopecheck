@@ -13,8 +13,10 @@ from scopecheck.datasets.canonicalize import canonical_json, content_hash, load_
 from scopecheck.db_cli import administer
 from scopecheck.demo import seed
 from scopecheck.evaluation.scorer import replay
+from scopecheck.retention import maintain
 from scopecheck.runs.live_cli import load_live_config, queue_live
 from scopecheck.runs.worker import serve
+from scopecheck.settings import Settings
 from scopecheck.version import PACKAGE_VERSION
 
 
@@ -79,7 +81,36 @@ def main() -> None:
         required=True,
         help="Authorize this budget as the local database owner",
     )
+    telemetry_parser = commands.add_parser(
+        "telemetry", help="Local diagnostic trace retention"
+    )
+    trace_commands = telemetry_parser.add_subparsers(
+        dest="trace_command", required=True
+    )
+    trace_commands.add_parser("prune")
+    retained = trace_commands.add_parser(
+        "retain", help="Preserve an explicitly published diagnostic artifact"
+    )
+    retained.add_argument("trace_id")
     args = parser.parse_args()
+    if args.command == "telemetry":
+        try:
+            settings = Settings()
+            if settings.trace_directory is None:
+                raise ValueError("Trace directory required")
+            count = maintain(
+                settings.trace_directory,
+                settings.trace_retention_days,
+                retain=getattr(args, "trace_id", None),
+            )
+            print(
+                canonical_json(
+                    {"removed": count, "retained": args.trace_command == "retain"}
+                )
+            )
+        except (ValueError, OSError):
+            parser.error("Trace maintenance failed; check directory and trace id")
+        return
     if args.command is None:
         parser.print_help()
         return

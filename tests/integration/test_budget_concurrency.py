@@ -417,3 +417,80 @@ asyncio.run(worker.serve(once=True))
         if process.returncode is None:
             process.kill()
             await process.wait()
+
+
+@pytest.mark.parametrize("boundary", ["deadline", "configuration", "attempt"])
+async def test_refused_reservation_cannot_consume_budget(
+    api, database, live_config, boundary
+):
+    _, claim, cases = await prepare(
+        api, database, live_config, live_config.maximum_charge() * 2
+    )
+    config, case = live_config, cases[0]
+    expected, match = ValueError, "Current running attempt"
+    if boundary == "deadline":
+        async with database.engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE run_jobs SET deadline_at = "
+                    "clock_timestamp() - interval '1 second'"
+                )
+            )
+        expected, match = worker.RunDeadlineExceeded, None
+    elif boundary == "configuration":
+        config = live_config.model_copy(
+            update={
+                "generation": live_config.generation.model_copy(
+                    update={
+                        "max_output_tokens": live_config.generation.max_output_tokens
+                        + 1
+                    }
+                )
+            }
+        )
+        match = "Reservation configuration mismatch"
+    else:
+        case = "no-running-attempt"
+    with pytest.raises(expected, match=match):
+        await reserve_call(database.engine, claim, case, 1, 1, config)
+    async with AsyncSession(database.engine) as session:
+        assert (
+            await session.scalar(select(func.count()).select_from(CallReservation)) == 0
+        )
+
+
+async def test_wrong_settlement_configuration_cannot_release_reserved_cost(
+    api, database, live_config
+):
+    _, claim, cases = await prepare(
+        api, database, live_config, live_config.maximum_charge()
+    )
+    reservation = await reserve_call(
+        database.engine, claim, cases[0], 1, 1, live_config
+    )
+    changed = live_config.model_copy(
+        update={
+            "generation": live_config.generation.model_copy(
+                update={
+                    "max_output_tokens": live_config.generation.max_output_tokens + 1
+                }
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="Settlement configuration mismatch"):
+        await settle_call(
+            database.engine,
+            claim,
+            reservation,
+            changed,
+            Turn(outcome="final_response", input_tokens=1, output_tokens=1),
+        )
+    async with AsyncSession(database.engine) as session:
+        assert (
+            await session.scalar(select(func.count()).select_from(CallSettlement)) == 0
+        )
+        assert (
+            await session.get(CallReservation, reservation)
+        ).amount_microusd == live_config.maximum_charge()
+    with pytest.raises(BudgetExceeded):
+        await reserve_call(database.engine, claim, cases[1], 1, 1, live_config)

@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from scopecheck import telemetry
 from scopecheck.providers.base import Turn
 from scopecheck.providers.config import LiveConfig
 from scopecheck.runs.models import CallReservation, CallSettlement, CaseAttempt, Run
@@ -22,6 +23,26 @@ class BudgetExceeded(Exception):
 
 
 async def reserve_call(
+    engine: AsyncEngine,
+    claim: "Claim",
+    case_id: str,
+    repetition: int,
+    sequence: int,
+    config: LiveConfig,
+) -> UUID:
+    with telemetry.span(
+        "budget.reserve", run_id=str(claim.run_id) if claim else "", mode="live"
+    ) as current:
+        try:
+            return await _reserve_call(
+                engine, claim, case_id, repetition, sequence, config
+            )
+        except BudgetExceeded:
+            current.set_attribute("error", "budget_exhausted")
+            raise
+
+
+async def _reserve_call(
     engine: AsyncEngine,
     claim: "Claim",
     case_id: str,

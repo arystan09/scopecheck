@@ -1,6 +1,7 @@
 """Public app settings; the worker reads its provider key separately."""
 
 import os
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -19,6 +20,14 @@ class Settings(BaseSettings):
     # Public API creation stays fake-only; live runs require local owner authority.
     mode: Literal["fake"] = "fake"
     public_demo: bool = Field(default=False, exclude=True)
+    metrics_token: SecretStr | None = Field(
+        default=None, repr=False, exclude=True, min_length=32
+    )
+    trace_directory: Path | None = Field(default=None, exclude=True)
+    trace_retention_days: int = Field(default=30, ge=1, le=3650, exclude=True)
+    collector: Literal["disabled", "local", "compose"] = Field(
+        default="disabled", exclude=True
+    )
 
     @model_validator(mode="after")
     def public_has_no_key(self) -> "Settings":

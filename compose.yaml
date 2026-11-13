@@ -5,6 +5,7 @@ services:
     ports:
       - "127.0.0.1:${SCOPECHECK_HTTP_PORT:-8000}:8000"
     environment:
+      SCOPECHECK_COLLECTOR: ${SCOPECHECK_COLLECTOR:-disabled}
       SCOPECHECK_MODE: fake
       SCOPECHECK_PUBLIC_DEMO: ${SCOPECHECK_PUBLIC_DEMO:-false}
       SCOPECHECK_DATABASE_URL: postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD:?Set a generated local POSTGRES_PASSWORD}@db:5432/scopecheck
@@ -20,7 +21,13 @@ services:
     environment:
       SCOPECHECK_DATABASE_URL: postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD:?Set a generated local POSTGRES_PASSWORD}@db:5432/scopecheck
     depends_on:
-      db:
+      collector:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.23.0
+    profiles: [observability]
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4318:4318"
+  db:
         condition: service_healthy
   worker:
     image: scopecheck:local
@@ -29,6 +36,7 @@ services:
     healthcheck:
       disable: true
     environment:
+      SCOPECHECK_COLLECTOR: ${SCOPECHECK_COLLECTOR:-disabled}
       SCOPECHECK_PUBLIC_DEMO: ${SCOPECHECK_PUBLIC_DEMO:-false}
       SCOPECHECK_DATABASE_URL: postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD:?Set a generated local POSTGRES_PASSWORD}@db:5432/scopecheck
     depends_on:

@@ -1,7 +1,7 @@
 # ScopeCheck
 
-Milestone **7 of 10** adds frozen evaluation splits, access-boundary checks, and
-an opt-in bounded public fake demo to the recovered fake/live runner. The
+Milestone **8 of 10** adds private telemetry, linked diagnostic traces, retention,
+and measured API/coverage evidence to the bounded fake/live evaluation flow. The
 milestone-4 fake-provider MVP remains: a local synthetic order sandbox, immutable datasets/configs, authenticated APIs, a separate PostgreSQL
 worker, per-case evidence, reports, comparisons, and a small Jinja/vanilla-JS UI.
 The fake workflow below needs no provider key. Live execution is available only
@@ -972,3 +972,86 @@ Source/wheel builds and frozen data loading from the wheel passed. No selected t
 was skipped. No paid request was made. Docker commands returned `command not found`;
 Compose, image build/non-root/container-health acceptance remain unverified locally.
 CI configuration includes these checks, but a new remote CI execution is pending.
+
+## Milestone 8: trace runs and measure API behavior
+
+See [observability.md](docs/observability.md) for capture rules, metric semantics,
+retention, primary references and measurement limitations. [Measured results](docs/measurements.md)
+record the actual local benchmark, coverage and failure evidence. No performance
+optimization or live-model measurement is claimed.
+
+Prerequisites remain Python 3.12, uv and PostgreSQL 18. Apply migration 0006 before
+starting the API/worker. For private native tracing, use the same private directory
+in both processes. No provider key is needed for fake work:
+
+```sh
+uv sync --frozen --all-groups
+# Set SCOPECHECK_DATABASE_URL to your local database URL as in the quickstart.
+uv run alembic upgrade head
+export SCOPECHECK_TRACE_DIRECTORY="$PWD/work/private-traces"
+export SCOPECHECK_TRACE_RETENTION_DAYS=30
+# API terminal only: generate a distinct operational token, never commit/log it.
+export SCOPECHECK_METRICS_TOKEN="$(openssl rand -hex 32)"
+uv run uvicorn scopecheck.app:create_app --factory --host 127.0.0.1 --port 8000
+# In the worker terminal, with the same DB/trace-directory settings:
+uv run scopecheck worker
+```
+
+Run the existing fake UI/demo smoke. JSON logs go to stderr; linked trace JSONL
+artifacts go to the private directory. `/metrics` requires the dedicated token,
+not an operator token. It is disabled without configuration and always 404 in
+public-demo mode. Keep the listener/collector private. To avoid putting the token
+in curl's process arguments, query it from an API-shell Python process:
+
+```sh
+uv run python - <<'PY'
+import os, urllib.request
+request = urllib.request.Request(
+    'http://127.0.0.1:8000/metrics',
+    headers={'Authorization': 'Bearer ' + os.environ['SCOPECHECK_METRICS_TOKEN']},
+)
+with urllib.request.urlopen(request, timeout=5) as response:
+    print(response.read().decode())
+PY
+uv run scopecheck telemetry prune
+uv run scopecheck telemetry retain TRACE_ID
+```
+
+The worker prunes unretained diagnostic files after 30 days (startup/hourly).
+`retain` marks an explicitly retained/published artifact and never publishes it;
+pruning preserves marked files and does not delete evaluation evidence or budgets.
+API-only deployments must schedule the prune CLI separately. stdout log rotation
+is the runtime's responsibility.
+
+An optional loopback-only collector/dashboard is available without adding a product
+endpoint or changing the application image:
+
+```sh
+export SCOPECHECK_COLLECTOR=compose
+# Use the existing generated POSTGRES_PASSWORD; not a provider key.
+docker compose --profile observability up --build -d
+# Dashboard: http://127.0.0.1:16686
+```
+
+The default collector setting is `disabled`; native export uses `local`.
+No arbitrary exporter URL is accepted. Ambient `OTEL_*` settings are rejected when
+export is enabled to prevent hidden header/credential overrides. Docker/collector
+execution has not been verified locally because Docker is unavailable here.
+
+To reproduce the measured path and core branch coverage, set
+`SCOPECHECK_TEST_ADMIN_URL` to a local PostgreSQL 18 admin URL permitted to create
+and drop **dedicated disposable** databases:
+
+```sh
+uv run python scripts/benchmark.py --runs 100 --concurrency 10
+uv run pytest --cov=scopecheck --cov-branch --cov-report=term-missing
+uv run coverage json -o coverage.json
+uv run python scripts/check_core_coverage.py coverage.json
+```
+
+The benchmark creates/migrates its own database, starts real loopback HTTP, seeds
+100 runs, measures 100 reads and 100 enqueues with ten clients, then removes its
+server/database. No worker/model is run. The report records hardware, versions,
+cache state, sizes, durations, sample counts and errors. CI measures coverage and
+enforces an 80% branch target per policy/scorer/budget module while retaining every
+critical scenario test. A fresh remote CI execution remains pending.

@@ -129,6 +129,7 @@ class RunJob(Record, Base):
     lease_generation: Mapped[int] = mapped_column(Integer, server_default="0")
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    trace_parent: Mapped[str | None] = mapped_column(String(55))
 
 
 class CaseAttempt(Record, Base):

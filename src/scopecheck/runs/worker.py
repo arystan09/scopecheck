@@ -1,6 +1,7 @@
 """Bounded execution with database-time leases, takeover, and fenced writes."""
 
 import asyncio
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -13,6 +14,7 @@ from openai import __version__ as OPENAI_SDK_VERSION
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from scopecheck import telemetry
 from scopecheck.datasets.canonicalize import content_hash
 from scopecheck.datasets.schemas import Case, Dataset
 from scopecheck.db import create_engine
@@ -27,6 +29,7 @@ from scopecheck.providers.openai import (
     client_for_worker,
     generation_settings,
 )
+from scopecheck.retention import maintain
 from scopecheck.runs.budget import BudgetExceeded, reserve_call, settle_call
 from scopecheck.runs.models import (
     AssistantConfig,
@@ -63,6 +66,7 @@ class Claim:
     dataset: dict[str, Any]
     config: dict[str, Any]
     snapshot: dict[str, Any]
+    trace_parent: str | None = None
 
 
 async def claim_job(
@@ -126,6 +130,7 @@ async def claim_job(
             dataset.content,
             config.content,
             run.snapshot,
+            job.trace_parent,
         )
 
 
@@ -377,6 +382,18 @@ async def finish_job(
 async def execute_claim(
     engine: AsyncEngine, claim: Claim, lease_seconds: int = LEASE_SECONDS
 ) -> None:
+    with telemetry.span(
+        "worker.run",
+        parent=claim.trace_parent,
+        run_id=str(claim.run_id),
+        mode=claim.snapshot.get("mode", "fake"),
+    ):
+        await _execute_claim(engine, claim, lease_seconds)
+
+
+async def _execute_claim(
+    engine: AsyncEngine, claim: Claim, lease_seconds: int = LEASE_SECONDS
+) -> None:
     async def bounded() -> None:
         await remaining_run_seconds(engine, claim, lease_seconds)
         # A crash after the last result needs only finalization, even if the
@@ -556,7 +573,44 @@ async def execute_cases_concurrently(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def observed_fake(case: Case, provider: FakeProvider) -> CaseScore:
+    with telemetry.span("provider.request", mode="fake") as current:
+        try:
+            result = run_case(case, provider)
+            current.set_attribute("status", "final_response")
+            return result
+        except TimeoutError:
+            current.set_attribute("error", "timeout")
+            raise
+        except Exception:
+            current.set_attribute("error", "execution_failed")
+            raise
+
+
 async def execute_case(
+    engine: AsyncEngine,
+    claim: Claim,
+    case: Case,
+    repetition: int,
+    config: ConfigInput | LiveConfig,
+    lease_seconds: int,
+    provider: OpenAIProvider | None,
+    stop_budget: asyncio.Event,
+) -> None:
+    with telemetry.span("case.execute", run_id=str(claim.run_id), mode=config.mode):
+        await _execute_case(
+            engine,
+            claim,
+            case,
+            repetition,
+            config,
+            lease_seconds,
+            provider,
+            stop_budget,
+        )
+
+
+async def _execute_case(
     engine: AsyncEngine,
     claim: Claim,
     case: Case,
@@ -621,12 +675,16 @@ async def execute_case(
         try:
             async with asyncio.timeout(30):
                 score = await asyncio.to_thread(
-                    run_case, case, FakeProvider(trace[:limit])
+                    observed_fake, case, FakeProvider(trace[:limit])
                 )
         except TimeoutError:
             score, status, error = None, "limited", "timeout"
         except Exception:
             score, status, error = None, "failed", "execution_failed"
+    from opentelemetry.trace import get_current_span
+
+    get_current_span().set_attribute("status", status)
+    get_current_span().set_attribute("error", telemetry.error_code(error))
     await finish_attempt(
         engine,
         claim,
@@ -651,10 +709,29 @@ async def run_one(
 
 
 async def serve(*, once: bool = False, poll_seconds: float = 1) -> None:
-    engine = create_engine(Settings())
+    settings = Settings()
+    telemetry.configure(settings.trace_directory, settings.collector)
+    engine = create_engine(settings)
+    last_prune: float | None = None
     owner = uuid4()
     try:
         while True:
+            now = asyncio.get_running_loop().time()
+            if settings.trace_directory is not None and (
+                last_prune is None or now - last_prune > 3600
+            ):
+                try:
+                    await asyncio.to_thread(
+                        maintain,
+                        settings.trace_directory,
+                        settings.trace_retention_days,
+                    )
+                except OSError:
+                    logging.getLogger("scopecheck").warning(
+                        "telemetry.retention",
+                        extra={"telemetry": {"status": "error", "error": "other"}},
+                    )
+                last_prune = now
             worked = await run_one(engine, owner)
             if once:
                 return

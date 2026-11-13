@@ -3,10 +3,10 @@
 The approved baseline has exactly **10 mandatory milestones**. The useful
 fake-provider MVP is milestone **4**, not milestone 1. Milestone 1 provides the
 application foundation; milestone 2 supplies the offline sandbox and scorer.
-The current authorization is milestone 7: frozen development/held-out evaluation,
-operator boundary audits, and a bounded fixed fake public demo. Public demo mode
-disables operator write APIs and all live creation/execution. Do not implement
-milestone 8 or later. No paid verification without explicit spending authorization.
+The current authorization is milestone 8: private allowlisted telemetry, linked
+traces, diagnostic retention, measured API benchmarks and core branch coverage.
+Do not implement milestone 9 or later. Public demo mode remains fake-only with no
+public telemetry. No paid verification without explicit spending authorization.
 The full later-stage roadmap was not supplied.
 Do not invent, merge, reorder, or silently implement milestones.
 

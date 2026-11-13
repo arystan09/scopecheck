@@ -36,8 +36,9 @@ jobs:
           SCOPECHECK_TEST_ADMIN_URL: postgresql+psycopg://scopecheck@127.0.0.1:5432/postgres
         run: |
           uv run alembic upgrade head
-          uv run pytest -m integration
-          uv run pytest -m e2e
+          uv run pytest --cov=scopecheck --cov-branch --cov-report=term-missing
+          uv run coverage json -o coverage.json
+          uv run python scripts/check_core_coverage.py coverage.json
       - name: Validate Compose, build, and test the non-root container
         run: |
           export POSTGRES_PASSWORD="$(openssl rand -hex 24)"

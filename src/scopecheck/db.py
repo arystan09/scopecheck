@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from scopecheck.settings import Settings
 
-SCHEMA_REVISION = "0005"
+SCHEMA_REVISION = "0006"
 
 
 def create_engine(settings: Settings) -> AsyncEngine:

@@ -252,8 +252,8 @@ async def test_admission_rollback_does_not_consume_quota(database):
 
 
 async def test_upgrade_from_mvp_preserves_queued_data(api, database):
-    await migration(database.url, "downgrade", "0004")
     run = await launch(api)
+    await migration(database.url, "downgrade", "0004")
     await migration(database.url, "upgrade", "head")
     async with AsyncSession(database.engine) as session:
         existing = await session.get(Run, UUID(run["id"]))
