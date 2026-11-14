@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:18
@@ -34,8 +34,22 @@ jobs:
       - name: Install recovery tools
         run: |
           sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg
+          # Noble's default repositories do not provide PostgreSQL 18 clients.
+          # Use the official PGDG repository with a scoped, verified signing key.
+          sudo install -d /usr/share/postgresql-common/pgdg
+          key=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          sudo curl --fail --silent --show-error --location \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "$key"
+          fingerprint=$(gpg --show-keys --with-colons "$key" | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$fingerprint" = B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+          echo "deb [signed-by=$key] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
           sudo apt-get install -y age postgresql-client-18
           echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/18/bin/pg_dump --version | grep -E 'PostgreSQL\) 18\.'
+          /usr/lib/postgresql/18/bin/pg_restore --version | grep -E 'PostgreSQL\) 18\.'
       - run: uv sync --frozen --all-groups
       - run: make check
       - name: Migrations and real PostgreSQL integration tests
