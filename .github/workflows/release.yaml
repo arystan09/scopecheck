@@ -1,0 +1,42 @@
+name: Release image (manual authorization)
+on:
+  workflow_dispatch:
+    inputs:
+      authorize_publication:
+        description: Publish this checked commit to GHCR
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  validate:
+    if: inputs.authorize_publication
+    uses: ./.github/workflows/checks.yaml
+  publish:
+    needs: validate
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test the exact image before pushing
+        run: |
+          docker build -t scopecheck:local .
+          sh scripts/check-container.sh
+      - name: Publish validated image and record immutable digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_USER: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          image="ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]'):$REVISION"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin
+          trap 'docker logout ghcr.io' EXIT
+          docker tag scopecheck:local "$image"
+          docker push "$image"
+          docker pull "$image"
+          docker image inspect "$image" --format '{{index .RepoDigests 0}}' >> "$GITHUB_STEP_SUMMARY"

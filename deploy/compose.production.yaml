@@ -1,0 +1,78 @@
+name: scopecheck-production
+x-app: &app
+  image: ghcr.io/${GHCR_REPOSITORY:?Set lowercase owner/repository}@sha256:${IMAGE_SHA256:?Set validated 64-character digest}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs: [/tmp:size=32m,mode=1777]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  networks: [private]
+  logging: &logging
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+  environment: &environment
+    SCOPECHECK_MODE: fake
+    SCOPECHECK_PUBLIC_DEMO: "true"
+    SCOPECHECK_COLLECTOR: disabled
+    SCOPECHECK_DATABASE_URL: postgresql+psycopg://scopecheck:${POSTGRES_PASSWORD:?Set generated hexadecimal password}@db:5432/scopecheck
+  depends_on:
+    db: {condition: service_healthy}
+services:
+  app:
+    <<: *app
+    mem_limit: 384m
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  worker:
+    <<: *app
+    mem_limit: 384m
+    command: [scopecheck, worker]
+    healthcheck: {disable: true}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  migrate:
+    <<: *app
+    restart: "no"
+    mem_limit: 256m
+    command: [alembic, upgrade, head]
+    healthcheck: {disable: true}
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    mem_limit: 512m
+    networks: [private]
+    logging: *logging
+    environment:
+      POSTGRES_DB: scopecheck
+      POSTGRES_USER: scopecheck
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set generated hexadecimal password}
+    volumes: [postgres_data:/var/lib/postgresql]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U scopecheck -d scopecheck]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    networks: [edge, private]
+    ports: ["80:80", "443:443"]
+    environment:
+      DEMO_DOMAIN: ${DEMO_DOMAIN:?Set owned DNS hostname}
+      ACME_EMAIL: ${ACME_EMAIL:?Set certificate contact}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging: *logging
+    depends_on:
+      app: {condition: service_healthy}
+networks:
+  edge: {}
+  private: {internal: true}
+volumes:
+  postgres_data: {}
+  caddy_data: {}
+  caddy_config: {}

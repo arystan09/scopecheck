@@ -1,7 +1,13 @@
 # ScopeCheck
 
-Milestone **8 of 10** adds private telemetry, linked diagnostic traces, retention,
-and measured API/coverage evidence to the bounded fake/live evaluation flow. The
+Milestone **10 of 10** assembles reproducible synthetic evidence and release
+presentation. **Required live experiment, hosted demo and remote CI evidence remain
+incomplete.** No live comparison or public deployment is claimed.
+See [experiment protocol/results](docs/experiment.md), [150-second walkthrough](docs/walkthrough.md),
+[architecture](docs/architecture.md), [development](docs/development.md),
+[license review](docs/licenses.md) and [operations](docs/operations.md).
+
+Milestone 8 telemetry and measured API/coverage evidence remain available. The
 milestone-4 fake-provider MVP remains: a local synthetic order sandbox, immutable datasets/configs, authenticated APIs, a separate PostgreSQL
 worker, per-case evidence, reports, comparisons, and a small Jinja/vanilla-JS UI.
 The fake workflow below needs no provider key. Live execution is available only
@@ -1055,3 +1061,34 @@ server/database. No worker/model is run. The report records hardware, versions,
 cache state, sizes, durations, sample counts and errors. CI measures coverage and
 enforces an 80% branch target per policy/scorer/budget module while retaining every
 critical scenario test. A fresh remote CI execution remains pending.
+
+## Milestone 9: deployment artifacts (hosting pending)
+
+See [operations.md](docs/operations.md) for the EU Lightsail resource proposal,
+manual release, DNS/HTTPS, private networking, daily encrypted off-VM backups,
+disposable restore drill, restart, rollback and shutdown instructions. No cloud
+resources or publication are authorized just by adding these files.
+
+Recovery checks require PostgreSQL 18 client tools (`pg_dump`, `pg_restore`), age,
+Python 3.12 and the frozen uv environment. Existing full integration/e2e checks now
+include a real encrypted backup/restore round trip; no provider key is used:
+
+```sh
+uv sync --frozen --all-groups
+make check
+# Set SCOPECHECK_TEST_ADMIN_URL to the local disposable PG18 administrator URL.
+uv run pytest --cov=scopecheck --cov-branch --cov-report=term-missing
+uv run coverage json -o coverage.json
+uv run python scripts/check_core_coverage.py coverage.json
+# Populate deploy/.env privately as described in operations.md.
+docker compose -f deploy/compose.production.yaml config --quiet
+uv run python scripts/check-production.py
+docker build -t scopecheck:local .
+sh scripts/check-container.sh
+```
+
+`restore_check.py --help` documents the explicit disposable destination arguments.
+The script refuses existing databases and never restores over active data. The
+manual release workflow publishes only after checks and container smoke pass,
+requires explicit dispatch consent and a configured protected `release` environment.
+No remote workflow is claimed to have run from these local checks.

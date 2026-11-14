@@ -3,11 +3,11 @@
 The approved baseline has exactly **10 mandatory milestones**. The useful
 fake-provider MVP is milestone **4**, not milestone 1. Milestone 1 provides the
 application foundation; milestone 2 supplies the offline sandbox and scorer.
-The current authorization is milestone 8: private allowlisted telemetry, linked
-traces, diagnostic retention, measured API benchmarks and core branch coverage.
-Do not implement milestone 9 or later. Public demo mode remains fake-only with no
-public telemetry. No paid verification without explicit spending authorization.
-The full later-stage roadmap was not supplied.
+The current authorization is milestone 10: research evidence and release documentation,
+without new product features. Live experiments, hosting, paid resources and image
+publication require explicit authorization. Incomplete hosted/live gates remain
+required; do not fabricate completion. Public demo remains fake-only with no public
+telemetry. Do not add further milestones.
 Do not invent, merge, reorder, or silently implement milestones.
 
 Keep one modular Python package and application image. The approved architecture

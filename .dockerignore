@@ -10,3 +10,7 @@
 !datasets/
 !datasets/dev/
 !datasets/dev/basic.json
+!datasets/dev/suite.json
+!datasets/holdout/
+!datasets/holdout/suite.json
+!datasets/manifest-v1.json

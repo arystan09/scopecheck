@@ -1,0 +1,10 @@
+{
+  "Rules": [{
+    "ID": "scopecheck-seven-day-baseline",
+    "Status": "Enabled",
+    "Filter": {"Prefix": "scopecheck/"},
+    "Expiration": {"Days": 8},
+    "NoncurrentVersionExpiration": {"NoncurrentDays": 1},
+    "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}
+  }]
+}

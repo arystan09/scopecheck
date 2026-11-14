@@ -1,0 +1,16 @@
+{
+  "basis": "development public inputs only; no live or holdout outcomes used",
+  "candidates": {
+    "baseline": "6e407052f95dca50216e8e4c8321f2850c0ed3eb71c10aa3cf2b30ef5a760192",
+    "cautious": "b393195133a4897469f6da26291d92249580d4b1663a4072aed5e6427fd9aae7"
+  },
+  "date": "2026-11-14",
+  "pending": [
+    "configurable prompt support",
+    "owner-selected model and generation settings",
+    "current owner-verified price snapshot",
+    "explicit total spending authorization",
+    "live access in worker environment"
+  ],
+  "status": "prompt text frozen; executable live configurations NOT frozen"
+}
